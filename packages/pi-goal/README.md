@@ -175,6 +175,39 @@ Older versions wrote unfinished goals to `~/.pi/agent/pi-goal-state.json` keyed 
 - `budget 100k/100k · automatic 12/25` — the user-configured token budget was reached; auto-continuation stops.
 - `complete` — shown briefly after `goal_complete` succeeds.
 
+## 🔔 Mode events
+
+Goal mode emits `pi:mode-changed` through Pi's existing `pi.events` bus whenever its semantic state changes.
+
+The payload is a complete snapshot with `version: 1`, `source: "pi-goal"`, `mode: "goal"`, `state`, and `active` fields.
+
+Goal states are `off`, `active`, `waiting`, `queued`, `paused`, `blocked`, `usage_limited`, `budget_limited`, and `complete`.
+
+`active` is true for an active Goal, including external waiting, and false for queued, stopped, completed, or absent Goals.
+
+The extension emits an initial snapshot at `session_start` and an `off` snapshot when a Goal is cleared or the session shuts down.
+
+Events are live notifications and are not replayed, so consumers should subscribe during extension initialization and reset their state on session boundaries.
+
+Consumers can ignore this event when they do not need Goal mode:
+
+```ts
+pi.events.on("pi:mode-changed", (event) => {
+	if (!event || typeof event !== "object") return;
+	const mode = event as {
+		version?: unknown;
+		source?: unknown;
+		mode?: unknown;
+		state?: unknown;
+		active?: unknown;
+	};
+	if (mode.version !== 1 || mode.source !== "pi-goal" || mode.mode !== "goal") return;
+	// React to mode.state and mode.active.
+});
+```
+
+The event contains no goal objective, Goal ID, or other user-provided task data.
+
 ## 💰 Token budgets and elapsed time
 
 The TUI budget chooser describes token budgets as cumulative Goal usage, warns that the final model

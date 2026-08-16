@@ -16,7 +16,6 @@ import {
 	isRetryableGoalInterruption,
 	isUsageLimitedGoalInterruption,
 	resetGoalSafetyEpoch,
-	STATUS_KEY,
 	type StatusContext,
 	truncateNotification,
 } from "./runtime.js";
@@ -39,6 +38,7 @@ export function registerGoalLifecycle(
 	options: GoalLifecycleOptions = {},
 ) {
 	pi.on("session_start", async (_event, ctx) => {
+		runtime.resetModePublisher();
 		runtime.replaceMenuSession();
 		runtime.clearCompletionStatusTimer();
 		runtime.clearContinuationTracking();
@@ -85,7 +85,7 @@ export function registerGoalLifecycle(
 		runController.bindSession(ctx);
 		if (runtime.legacyQueueState) {
 			runtime.toolPolicy.reconcileRestoredState(runtime.settings.toolVisibility, false);
-			ctx.ui.setStatus(STATUS_KEY, undefined);
+			runtime.clearStatus(ctx);
 			notifyTerminal(ctx.ui, REMOVED_PERSISTED_QUEUE_WARNING, "warning");
 			return;
 		}
@@ -117,7 +117,7 @@ export function registerGoalLifecycle(
 			runtime.restoreGoalWaitTimer(ctx);
 		} else {
 			runtime.toolPolicy.reconcileRestoredState(runtime.settings.toolVisibility, false);
-			ctx.ui.setStatus(STATUS_KEY, undefined);
+			runtime.clearStatus(ctx);
 		}
 	});
 
@@ -141,7 +141,7 @@ export function registerGoalLifecycle(
 		runtime.activeGoal = undefined;
 		runtime.legacyQueueState = undefined;
 		runtime.legacyExperimentalGoalsSetting = false;
-		ctx.ui.setStatus(STATUS_KEY, undefined);
+		runtime.clearStatus(ctx);
 		runtime.clearCompletionStatusTimer();
 		runtime.clearTerminalDetails();
 	});

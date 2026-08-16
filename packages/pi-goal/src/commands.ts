@@ -19,7 +19,6 @@ import {
 	isResumableGoalStatus,
 	nextGoalInstance,
 	queueGoalSafetyReset,
-	STATUS_KEY,
 	type StatusContext,
 	stoppedStatusLabel,
 	transitionGoal,
@@ -158,7 +157,7 @@ export class GoalCommandController {
 					this.runtime.clearGoalRecovery();
 					this.runtime.clearBudgetWrapUp();
 					this.runtime.clearStaleGoalToolCallBlock();
-					ctx.ui.setStatus(STATUS_KEY, undefined);
+					this.runtime.clearStatus(ctx);
 				} else {
 					this.runtime.clearActiveGoal(ctx);
 				}
@@ -335,7 +334,7 @@ export class GoalCommandController {
 			this.runtime.clearBudgetWrapUp();
 			this.runtime.clearStaleGoalToolCallBlock();
 			this.runtime.clearPersistedGoal(ctx.cwd);
-			ctx.ui.setStatus(STATUS_KEY, undefined);
+			this.runtime.clearStatus(ctx);
 			notifyTerminal(
 				ctx.ui,
 				hadLegacyQueue ? "Removed legacy ordered goal queue state." : "No active goal.",
@@ -447,7 +446,7 @@ export class GoalCommandController {
 
 	showGoal(ctx: StatusContext) {
 		if (!this.runtime.activeGoal) {
-			ctx.ui.setStatus(STATUS_KEY, undefined);
+			this.runtime.clearStatus(ctx);
 			this.reportGoalStatus(ctx, this.emptyGoalMessage());
 			return;
 		}

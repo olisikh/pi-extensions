@@ -12,6 +12,7 @@ import {
 	extractContinuationMarker,
 	extractGoalPromptMarker,
 } from "./markers.js";
+import { createGoalModePublisher } from "./mode-events.js";
 import {
 	type ActiveGoal,
 	clearLegacyPersistedGoal,
@@ -240,9 +241,11 @@ export class GoalRuntime {
 	menuController = new AbortController();
 
 	readonly pi: ExtensionAPI;
+	private readonly modePublisher;
 
 	constructor(pi: ExtensionAPI) {
 		this.pi = pi;
+		this.modePublisher = createGoalModePublisher(pi);
 		this.toolPolicy = new GoalToolPolicy(pi);
 	}
 
@@ -520,12 +523,23 @@ export class GoalRuntime {
 		if (retryAt !== undefined) this.scheduleGoalWaitTimer(ctx, goalId, retryAt);
 	}
 
+	resetModePublisher() {
+		this.modePublisher.reset();
+	}
+
 	updateStatus(ctx: StatusContext, goal: ActiveGoal) {
 		this.clearCompletionStatusTimer();
 		ctx.ui.setStatus(
 			STATUS_KEY,
 			formatStatus(goal, this.settings.continuationLimits.automaticTurns),
 		);
+		this.modePublisher.publish(goal);
+	}
+
+	clearStatus(ctx: StatusContext) {
+		this.clearCompletionStatusTimer();
+		ctx.ui.setStatus(STATUS_KEY, undefined);
+		this.modePublisher.publishState(this.legacyQueueState ? "queued" : "off", false);
 	}
 
 	stopActiveGoal(ctx: StatusContext, request: GoalStopRequest) {
@@ -1113,7 +1127,7 @@ export class GoalRuntime {
 		clearLegacyPersistedGoal(cwd);
 	}
 
-	clearActiveGoal(ctx: StatusContext, reason = "goal cleared") {
+	clearActiveGoal(ctx: StatusContext, reason = "goal cleared", clearStatus = true) {
 		const clearedGoal = this.activeGoal;
 		this.clearGoalWaitTimer();
 		this.cancelContinuationWork();
@@ -1123,7 +1137,7 @@ export class GoalRuntime {
 		this.activeGoal = undefined;
 		this.legacyQueueState = undefined;
 		this.clearPersistedGoal(ctx.cwd, clearedGoal, reason);
-		ctx.ui.setStatus(STATUS_KEY, undefined);
+		if (clearStatus) this.clearStatus(ctx);
 		// Do not relock toolPolicy: after first activation, keep tools visible for the
 		// rest of this extension runtime to avoid repeated tool-schema churn.
 	}
@@ -1195,10 +1209,11 @@ export class GoalRuntime {
 	showCompletionStatus(ctx: StatusContext) {
 		this.clearCompletionStatusTimer();
 		ctx.ui.setStatus(STATUS_KEY, "complete");
+		this.modePublisher.publishState("complete", false);
 		this.completionStatusTimer = setTimeout(() => {
 			this.completionStatusTimer = undefined;
 			try {
-				ctx.ui.setStatus(STATUS_KEY, undefined);
+				this.clearStatus(ctx);
 			} catch {
 				// The completion status is best-effort; the captured ctx may be stale after
 				// session replacement or reload before this timer fires.
