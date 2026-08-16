@@ -26,6 +26,7 @@ import {
 	implementationRetentionPreview,
 } from "./implementation-retention.js";
 import { invalidPlanMessage, latestAssistantText, parseProposedPlan } from "./message-transform.js";
+import { createPlanModePublisher } from "./mode-events.js";
 import { createPlanActionController } from "./plan-action-controller.js";
 import { createPlanExportController } from "./plan-export-controller.js";
 import {
@@ -108,6 +109,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
 	let refreshStateBeforeFirstAgentStart = false;
 	let menuController = new AbortController();
 	const implementationRetention = createImplementationRetentionCoordinator();
+	const modePublisher = createPlanModePublisher(pi);
 	const persistState = () => pi.appendEntry<PlanModeState>(STATE_ENTRY_TYPE, state);
 	const planExports = createPlanExportController({
 		getState: () => state,
@@ -310,6 +312,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
 	});
 
 	pi.on("session_start", async (event, ctx) => {
+		modePublisher.reset();
 		const generation = ++menuGeneration;
 		refreshStateBeforeFirstAgentStart = event.reason === "new";
 		menuController.abort(new DOMException("Plan-mode session replaced", "AbortError"));
@@ -967,10 +970,12 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
 
 	function updateUi(ctx: ExtensionContext) {
 		updatePlanModeUi(ctx, state, formatToolSummary);
+		modePublisher.publish(state);
 	}
 
 	function clearUi(ctx: ExtensionContext) {
 		clearPlanModeUi(ctx);
+		modePublisher.publish({ enabled: false, awaitingAction: false });
 	}
 
 	function planStatusText() {

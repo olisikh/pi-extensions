@@ -8,7 +8,6 @@ import {
 import { Type } from "typebox";
 import { notifyTerminal, safeTerminalText } from "./errors.js";
 import {
-	formatStatus,
 	GOAL_BLOCKED_TOOL,
 	GOAL_COMPLETE_TOOL,
 	GOAL_WAIT_TOOL,
@@ -16,7 +15,6 @@ import {
 	goalIdRejectionReason,
 	isContradictoryCompletionSummary,
 	MAX_GOAL_ID_LENGTH,
-	STATUS_KEY,
 	transitionGoal,
 	truncateNotification,
 } from "./runtime.js";
@@ -163,8 +161,7 @@ export function registerGoalTools(pi: ExtensionAPI, runtime: GoalRuntime) {
 			runtime.recordGoalUsage(runtime.activeGoal, ctx);
 			runtime.persistGoal(runtime.activeGoal);
 
-			ctx.ui.setStatus(STATUS_KEY, formatStatus(runtime.activeGoal));
-			runtime.clearActiveGoal(ctx);
+			runtime.clearActiveGoal(ctx, "goal completed", false);
 			runtime.showCompletionStatus(ctx);
 			notifyTerminal(ctx.ui, `Goal complete: ${goal}`, "info");
 

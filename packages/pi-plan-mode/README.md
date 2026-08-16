@@ -22,6 +22,39 @@ Pi core intentionally does not ship a built-in plan mode; this package provides 
 - Shows Plan mode state in Pi's statusline as `plan active`, `plan ready`, `plan saved`, or `plan implementing`; `@narumitw/pi-statusline` adds the default `📝` icon unless configured otherwise.
 - Persists Plan mode, one session-local saved plan, and active implementation state so resume and compaction retain the exact accepted plan.
 
+## 🔔 Mode events
+
+Plan mode emits `pi:mode-changed` through Pi's existing `pi.events` bus whenever its semantic state changes.
+
+The payload is a complete snapshot with `version: 1`, `source: "pi-plan-mode"`, `mode: "plan"`, `state`, and `active` fields.
+
+Plan states are `off`, `active`, `ready`, `saved`, and `implementing`.
+
+`active` is true for `active` and `ready`, and false for the retained or inactive states.
+
+The extension emits an initial snapshot at `session_start` and an `off` snapshot when the session shuts down.
+
+Events are live notifications and are not replayed, so consumers should subscribe during extension initialization and reset their state on session boundaries.
+
+Consumers can ignore this event when they do not need Plan mode:
+
+```ts
+pi.events.on("pi:mode-changed", (event) => {
+	if (!event || typeof event !== "object") return;
+	const mode = event as {
+		version?: unknown;
+		source?: unknown;
+		mode?: unknown;
+		state?: unknown;
+		active?: unknown;
+	};
+	if (mode.version !== 1 || mode.source !== "pi-plan-mode" || mode.mode !== "plan") return;
+	// React to mode.state and mode.active.
+});
+```
+
+The event contains no plan contents or other user-provided task data.
+
 ## 📦 Install
 
 This release requires Pi 0.80.6 or newer.
