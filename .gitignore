@@ -201,7 +201,6 @@ vite.config.ts.timestamp-*
 .vite/
 
 # Project
-third_party/
-packages/pi-lsp/test/docker/results/raw/
-packages/pi-codex-compact/benchmark/results/
 .pi/agent/
+docs/plans/archived/
+docs/roadmaps/archived/

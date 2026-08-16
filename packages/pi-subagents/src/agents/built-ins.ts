@@ -14,6 +14,7 @@ export const BUILT_IN_AGENTS: AgentConfig[] = [
 		capabilityManifest: builtInManifest(["repository-search", "code-evidence"], "read", [
 			"evidence-gathering",
 		]),
+		thinkingLevel: "low",
 		source: "built-in",
 		filePath: "built-in:scout",
 		systemPrompt: [
@@ -65,28 +66,6 @@ export const BUILT_IN_AGENTS: AgentConfig[] = [
 		),
 		source: "built-in",
 		filePath: "built-in:worker",
-		systemPrompt: workerSystemPrompt(),
-	},
-	{
-		name: "general",
-		description: "Alias for worker; kept for model-generated subagent names.",
-		capabilityManifest: builtInManifest(
-			["implementation", "command-execution", "repository-modification"],
-			"write",
-		),
-		source: "built-in",
-		filePath: "built-in:general",
-		systemPrompt: workerSystemPrompt(),
-	},
-	{
-		name: "general-purpose",
-		description: "Alias for worker; compatible with common subagent naming conventions.",
-		capabilityManifest: builtInManifest(
-			["implementation", "command-execution", "repository-modification"],
-			"write",
-		),
-		source: "built-in",
-		filePath: "built-in:general-purpose",
 		systemPrompt: workerSystemPrompt(),
 	},
 ];
