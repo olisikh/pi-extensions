@@ -14,7 +14,32 @@ import {
 } from "./subagents-test-helpers.js";
 
 const restoreTestEnvironment = installSubagentsTestEnvironment();
+writeReviewerAgent(process.env.PI_CODING_AGENT_DIR ?? "");
 afterAll(restoreTestEnvironment);
+
+function writeReviewerAgent(directory: string): void {
+	const agentsDir = path.join(directory, "agents");
+	mkdirSync(agentsDir, { recursive: true });
+	writeFileSync(
+		path.join(agentsDir, "reviewer.md"),
+		[
+			"---",
+			"name: reviewer",
+			"description: Test review agent",
+			"tools: read,grep,find,ls",
+			"capabilityManifest:",
+			"  version: pi-subagents:capabilities:v1",
+			"  capabilities: [code-review]",
+			"  modalities: [text]",
+			"  resultFormats: [structured-v2]",
+			"  authority:",
+			"    filesystem: read",
+			"  verificationRoles: [independent-review]",
+			"---",
+			"Review independently.",
+		].join("\n"),
+	);
+}
 
 test("workflow mode schedules dependency-ready tasks and rejects cycles before child launch", async () => {
 	const root = mkdtempSync(path.join(os.tmpdir(), "pi-subagents-workflow-"));
@@ -48,13 +73,13 @@ test("workflow mode schedules dependency-ready tasks and rejects cycles before c
 					tasks: [
 						{
 							id: "produce",
-							agent: "scout",
+							agent: "explorer",
 							task: "produce schema",
 							resultFormat: "structured-v2",
 						},
 						{
 							id: "consume",
-							agent: "scout",
+							agent: "explorer",
 							task: "consume schema",
 							dependsOn: ["produce"],
 							inputArtifacts: ["schema"],
@@ -100,7 +125,7 @@ test("workflow mode schedules dependency-ready tasks and rejects cycles before c
 			undefined,
 			ctx,
 		);
-		assert.equal(routed.details?.results[0]?.agent, "scout");
+		assert.equal(routed.details?.results[0]?.agent, "explorer");
 
 		rmSync(marker, { force: true });
 		const mismatched = await tool.execute(
@@ -110,13 +135,13 @@ test("workflow mode schedules dependency-ready tasks and rejects cycles before c
 					tasks: [
 						{
 							id: "produce",
-							agent: "scout",
+							agent: "explorer",
 							task: "produce schema",
 							resultFormat: "structured-v2",
 						},
 						{
 							id: "consume",
-							agent: "scout",
+							agent: "explorer",
 							task: "consume schema",
 							dependsOn: ["produce"],
 							inputArtifacts: ["schema"],
@@ -144,7 +169,7 @@ test("workflow mode schedules dependency-ready tasks and rejects cycles before c
 					tasks: [
 						{
 							id: "produce",
-							agent: "scout",
+							agent: "explorer",
 							task: "duplicate artifact",
 							resultFormat: "structured-v2",
 						},
@@ -170,7 +195,7 @@ test("workflow mode schedules dependency-ready tasks and rejects cycles before c
 							tasks: [
 								{
 									id: "lookup",
-									agent: "scout",
+									agent: "explorer",
 									task: "lookup",
 									contract: {
 										version: "pi-subagents:delegation:v2",
@@ -208,13 +233,13 @@ test("workflow mode schedules dependency-ready tasks and rejects cycles before c
 							tasks: [
 								{
 									id: "implementation",
-									agent: "scout",
+									agent: "explorer",
 									task: "produce schema",
 									resultFormat: "structured-v2",
 								},
 								{
 									id: "verification",
-									agent: "scout",
+									agent: "explorer",
 									task: "verify schema",
 									dependsOn: ["implementation"],
 									verifierFor: "implementation",
@@ -238,8 +263,8 @@ test("workflow mode schedules dependency-ready tasks and rejects cycles before c
 					{
 						workflow: {
 							tasks: [
-								{ id: "a", agent: "scout", task: "a", dependsOn: ["b"] },
-								{ id: "b", agent: "scout", task: "b", dependsOn: ["a"] },
+								{ id: "a", agent: "explorer", task: "a", dependsOn: ["b"] },
+								{ id: "b", agent: "explorer", task: "b", dependsOn: ["a"] },
 							],
 						},
 					},
@@ -505,7 +530,7 @@ test("workflow retries are bounded and require an idempotent contract", async ()
 							tasks: [
 								{
 									id: "retry",
-									agent: "scout",
+									agent: "explorer",
 									task: "retry",
 									retryPolicy: { maxAttempts: 2 },
 								},
@@ -527,7 +552,7 @@ test("workflow retries are bounded and require an idempotent contract", async ()
 					tasks: [
 						{
 							id: "retry",
-							agent: "scout",
+							agent: "explorer",
 							task: "retry",
 							retryPolicy: { maxAttempts: 2 },
 							contract: {
@@ -579,7 +604,7 @@ test("workflow hedging duplicates only an explicitly read-only task and cancels 
 					tasks: [
 						{
 							id: "hedge",
-							agent: "scout",
+							agent: "explorer",
 							task: "read only",
 							hedgeAfterMs: 20,
 							contract: {
@@ -766,7 +791,7 @@ test("opt-in verified execution owns accept, bounded rework, drift, checks, evid
 			/unsafe verification command/i,
 		);
 		await assert.rejects(
-			() => run("scenario-incapable-verifier", { verifierAgent: "scout" }),
+			() => run("scenario-incapable-verifier", { verifierAgent: "explorer" }),
 			/independent structured-v2 review capability/i,
 		);
 		const launchesAfterUnsafe = readFileSync(launches, "utf8").trim().split("\n").length;
