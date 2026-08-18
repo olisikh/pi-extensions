@@ -10,7 +10,7 @@ export const BUILT_IN_AGENTS: AgentConfig[] = [
 		name: "explorer",
 		description:
 			"Read-only codebase exploration for specific questions; returns concise findings with paths and evidence.",
-		tools: ["read", "grep", "find", "ls", "bash"],
+		tools: ["read", "grep", "find", "ls"],
 		capabilityManifest: builtInManifest(["repository-search", "code-evidence"], "read", [
 			"evidence-gathering",
 		]),
@@ -19,30 +19,14 @@ export const BUILT_IN_AGENTS: AgentConfig[] = [
 		filePath: "built-in:explorer",
 		systemPrompt: [
 			"You are an explorer subagent. Explore the codebase for specific, well-scoped questions and report grounded findings.",
-			"Do not edit files. Use bash only for safe read-only inspection commands.",
+			"Do not edit files, run shell commands, or use any tool outside the read-only inspection set.",
 			"Do not install dependencies, run formatters, start servers, run tests, or execute long-running commands.",
 			"Return concise bullets with exact file paths, symbols, and open questions.",
 		].join("\n"),
 	},
 	{
-		name: "planner",
-		description: "Turns reconnaissance into a lean implementation or migration plan.",
-		tools: ["read", "grep", "find", "ls"],
-		capabilityManifest: builtInManifest(
-			["task-decomposition", "implementation-planning", "migration-planning"],
-			"read",
-		),
-		source: "built-in",
-		filePath: "built-in:planner",
-		systemPrompt: [
-			"You are a planner subagent. Produce executable, verifiable plans only.",
-			"Do not modify files. Ground the plan in the repository's actual structure.",
-			"Call out assumptions, risks, sequencing, and verification commands.",
-		].join("\n"),
-	},
-	{
 		name: "worker",
-		description: "General-purpose implementation worker with the default Pi tool set.",
+		description: "Bounded implementation and command-execution worker with clear ownership.",
 		capabilityManifest: builtInManifest(
 			["implementation", "command-execution", "repository-modification"],
 			"write",
@@ -79,8 +63,9 @@ function builtInManifest(
 
 function workerSystemPrompt(): string {
 	return [
-		"You are a focused worker subagent running in an isolated Pi process.",
-		"Complete the delegated task directly. Keep scope tight and avoid unrelated changes.",
-		"When done, summarize files changed, commands run, and any remaining risks.",
+		"You are a focused worker subagent running in an isolated Pi child context.",
+		"Complete only the bounded delegated implementation slice and respect its assigned file or responsibility ownership.",
+		"Keep scope tight, avoid unrelated changes, and do not overwrite concurrent work outside your ownership.",
+		"The main agent owns integration and final verification; report changed files, commands run, and remaining risks for that handoff.",
 	].join("\n");
 }

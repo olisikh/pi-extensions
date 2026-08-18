@@ -135,6 +135,7 @@ class FailOnceWorkspaceManager extends FakeWorkspaceManager {
 class FakeChildSession implements ChildSession {
 	readonly sessionId = "child-session";
 	readonly prompts: string[] = [];
+	readonly steers: string[] = [];
 	readonly messages: Array<Record<string, unknown>> = [];
 	aborts = 0;
 	disposals = 0;
@@ -170,6 +171,11 @@ class FakeChildSession implements ChildSession {
 		};
 		this.messages.push(assistant);
 		for (const listener of this.listeners) listener({ type: "message_update", message: assistant });
+	}
+
+	async steer(text: string): Promise<void> {
+		this.steers.push(text);
+		this.messages.push({ role: "user", content: text });
 	}
 
 	subscribe(listener: (event: unknown) => void): () => void {
@@ -505,6 +511,57 @@ test("InProcessTransport maps parent abort to an interrupted outcome and reuses 
 	await transport.shutdown();
 });
 
+test("InProcessTransport pushes peer envelopes only to an active retained child", async () => {
+	const child = new FakeChildSession();
+	const peerRuntime = {
+		send: async () => {
+			throw new Error("unused");
+		},
+		list: () => [],
+		acknowledge: async () => undefined,
+		issueCredentials: async () => {
+			throw new Error("unused");
+		},
+		revoke: () => undefined,
+	};
+	const transport = new InProcessTransport({
+		modelRegistry: {} as never,
+		getParentRuntime: () => ({ model: undefined, thinkingLevel: "off" }),
+		createSession: async (options) => {
+			assert.equal(options.peerRuntime, peerRuntime);
+			return child;
+		},
+		discoverAgent: () => agentConfig(),
+		peerRuntime,
+	});
+	const agent = managedAgent({ taskName: "worker", taskPath: "/root/worker" });
+	assert.equal(
+		await transport.deliverMessage(agent, {
+			id: "msg_before",
+			senderId: "root",
+			recipientId: agent.id,
+			content: "queued",
+			createdAt: 1,
+		}),
+		false,
+	);
+	await transport.runTurn(agent, "start", new AbortController().signal);
+	assert.equal(
+		await transport.deliverMessage(agent, {
+			id: "msg_active",
+			senderId: "root",
+			recipientId: agent.id,
+			content: "active <private>live-secret</private>",
+			createdAt: 2,
+		}),
+		true,
+	);
+	assert.match(child.steers[0] ?? "", /Message ID: msg_active/);
+	assert.match(child.steers[0] ?? "", /Payload:\nactive \[private content omitted\]/);
+	assert.doesNotMatch(child.steers[0] ?? "", /live-secret/);
+	await transport.shutdown();
+});
+
 test("in-process tool validation rejects unavailable extension tools without widening", () => {
 	assert.deepEqual(validateInProcessTools(undefined), undefined);
 	assert.deepEqual(validateInProcessTools([]), []);
@@ -654,6 +711,66 @@ test("in-process resource loading rejects a non-regular system prompt source", a
 	}
 });
 
+test("registered detached workers share a workspace without a write override", async () => {
+	const originalDir = process.env.PI_CODING_AGENT_DIR;
+	const agentDir = mkdtempSync(path.join(os.tmpdir(), "pi-subagent-shared-workers-"));
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const children: FakeChildSession[] = [];
+		const mock = createMockPi();
+		const controller = registerStatefulSubagents(mock.pi, {
+			settings: { transport: "in-process" },
+			createInProcessSession: async () => {
+				const child = new FakeChildSession(true);
+				children.push(child);
+				return child;
+			},
+		});
+		const context = createMockContext();
+		await mock.events.get("session_start")?.[0]?.({}, context.ctx);
+		const execute = async (name: string, params: Record<string, unknown>) => {
+			const tool = mock.tools.find((candidate) => candidate.name === name) as {
+				execute: (...args: unknown[]) => Promise<unknown>;
+			};
+			return tool.execute(
+				`call-${name}`,
+				params,
+				new AbortController().signal,
+				undefined,
+				context.ctx,
+			) as Promise<{ details: { agent: { id: string; state: string } } }>;
+		};
+
+		const first = await execute("subagent_spawn", { agent: "worker", task: "first" });
+		const [second, third] = await Promise.all([
+			execute("subagent_spawn", { agent: "worker", task: "second" }),
+			execute("subagent_spawn", { agent: "worker", task: "third" }),
+		]);
+		assert.equal(new Set([first, second, third].map((entry) => entry.details.agent.id)).size, 3);
+		assert.equal(controller.getRuntimeStatus().activeAgents, 3);
+
+		await execute("subagent_manage", {
+			action: "interrupt",
+			agentId: first.details.agent.id,
+		});
+		const followedUp = await execute("subagent_send", {
+			agentId: first.details.agent.id,
+			task: "continue while second is active",
+			allowConcurrentWrites: false,
+		});
+		assert.match(followedUp.details.agent.state, /starting|running/);
+		assert.equal(controller.getRuntimeStatus().activeAgents, 3);
+
+		assert.equal(children.length, 3);
+		assert.equal(await controller.clearAgents(), 3);
+		await mock.events.get("session_shutdown")?.[0]?.({}, context.ctx);
+	} finally {
+		if (originalDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = originalDir;
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
 test("registered detached spawn auto-resumes without exposing a wait tool", async () => {
 	const originalDir = process.env.PI_CODING_AGENT_DIR;
 	const agentDir = mkdtempSync(path.join(os.tmpdir(), "pi-subagent-sdk-tools-"));
@@ -742,8 +859,14 @@ test("registered detached spawn auto-resumes without exposing a wait tool", asyn
 			activeAgents: 1,
 			retainedAgents: 1,
 		});
-		assert.match(spawned.content[0]?.text ?? "", /useful non-overlapping work immediately/i);
-		assert.match(spawned.content[0]?.text ?? "", /end the response/i);
+		assert.match(spawned.content[0]?.text ?? "", /continue the identified.*local work/i);
+		assert.match(spawned.content[0]?.text ?? "", /auto-resume.*synthesis/i);
+		assert.doesNotMatch(spawned.content[0]?.text ?? "", /end the response/i);
+		assert.match(spawned.content[0]?.text ?? "", /do not merely announce.*end/i);
+		assert.match(
+			spawned.content[0]?.text ?? "",
+			/explicit user-requested specialist model.*tool-profile.*isolation/i,
+		);
 		assert.match(spawned.content[0]?.text ?? "", /do not poll/i);
 		await waitForPromptCount(1);
 		assert.deepEqual(child.prompts, ["first"]);
@@ -1208,5 +1331,28 @@ test("public SDK child-session adapter completes a deterministic in-memory turn 
 		2,
 	);
 	child.dispose();
+	const peerChild = await createSdkChildSession({
+		agent: managedAgent({ id: "sa_peer_sdk", cwd: childCwd }),
+		agentConfig: agentConfig({ tools: undefined, model: "child-smoke/child-model:max" }),
+		history: [],
+		modelRegistry,
+		parentRuntime: { model: undefined, thinkingLevel: "off" },
+		peerRuntime: {
+			async send() {
+				throw new Error("unused");
+			},
+			list: () => [],
+			async acknowledge() {},
+			async issueCredentials() {
+				throw new Error("unused");
+			},
+			revoke() {},
+		},
+	});
+	const peerTools = peerChild.getActiveToolNames();
+	assert.ok(peerTools.includes("subagent_peer_send"));
+	assert.ok(peerTools.includes("subagent_peer_list"));
+	assert.ok(peerTools.includes("read"), "peer tools must not suppress Pi default built-ins");
+	peerChild.dispose();
 	assert.deepEqual(readdirSync(childCwd), []);
 });

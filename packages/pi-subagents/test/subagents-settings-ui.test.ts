@@ -40,7 +40,6 @@ test("delegation workflow settings control the registered tool surface", () => {
 				settings: {},
 				tools: [
 					"subagent",
-					"subagent_auto",
 					"subagent_spawn",
 					"subagent_send",
 					"subagent_manage",
@@ -48,6 +47,7 @@ test("delegation workflow settings control the registered tool surface", () => {
 					"subagent_inspect",
 					"subagent_consult",
 				],
+				forbiddenPromptText: undefined,
 			},
 			{
 				name: "async only",
@@ -59,16 +59,19 @@ test("delegation workflow settings control the registered tool surface", () => {
 					"subagent_mailbox",
 					"subagent_inspect",
 				],
+				forbiddenPromptText: /blocking subagent|subagent_consult/i,
 			},
 			{
 				name: "blocking only",
 				settings: { blocking: { enabled: true }, stateful: { enabled: false } },
-				tools: ["subagent", "subagent_auto", "subagent_inspect", "subagent_consult"],
+				tools: ["subagent", "subagent_inspect", "subagent_consult"],
+				forbiddenPromptText: /subagent_(?:spawn|send|manage|mailbox)/i,
 			},
 			{
 				name: "disabled",
 				settings: { blocking: { enabled: false }, stateful: { enabled: false } },
 				tools: ["subagent_inspect"],
+				forbiddenPromptText: /blocking subagent|subagent_(?:spawn|send|manage|mailbox|consult)/i,
 			},
 		] as const;
 		for (const scenario of cases) {
@@ -81,12 +84,30 @@ test("delegation workflow settings control the registered tool surface", () => {
 				scenario.name,
 			);
 			assert.ok(mock.commands.has("subagents"), `${scenario.name} keeps recovery commands`);
+			const promptMetadata = mock.tools
+				.flatMap((tool) => [
+					tool.promptSnippet,
+					...(Array.isArray(tool.promptGuidelines) ? tool.promptGuidelines : []),
+				])
+				.filter((value): value is string => typeof value === "string")
+				.join("\n");
+			if (scenario.forbiddenPromptText) {
+				assert.doesNotMatch(promptMetadata, scenario.forbiddenPromptText, scenario.name);
+			}
 			if (scenario.name === "async only") {
 				const spawnGuidance = mock.tools.find(
 					(tool) => tool.name === "subagent_spawn",
 				)?.promptGuidelines;
 				assert.ok(Array.isArray(spawnGuidance));
-				assert.doesNotMatch(spawnGuidance.join("\n"), /blocking subagent/i);
+				const guidance = spawnGuidance.join("\n");
+				assert.doesNotMatch(guidance, /blocking subagent/i);
+				assert.match(guidance, /identify.*non-overlapping.*main-agent work/i);
+				assert.match(guidance, /immediately continue.*identified.*local task/i);
+				assert.match(guidance, /supported.*integration path/i);
+				assert.match(
+					guidance,
+					/without concurrent main-agent work.*specialist model.*tool profile.*isolation/i,
+				);
 			}
 		}
 	} finally {
@@ -109,7 +130,7 @@ test("disabled stateful settings do not advertise unavailable lifecycle tools", 
 		subagents(mock.pi);
 		assert.deepEqual(
 			mock.tools.map((tool) => tool.name),
-			["subagent", "subagent_auto", "subagent_inspect", "subagent_consult"],
+			["subagent", "subagent_inspect", "subagent_consult"],
 		);
 		const blockingTool = mock.tools[0];
 		assert.doesNotMatch(String(blockingTool?.description), /subagent_spawn/i);

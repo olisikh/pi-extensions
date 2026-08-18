@@ -69,6 +69,7 @@ function setup(
 		| {
 				label: string;
 				description: string;
+				promptGuidelines?: string[];
 				parameters: {
 					additionalProperties?: boolean;
 					required?: string[];
@@ -102,6 +103,9 @@ test("subagent_consult registers a strict actionless single-agent schema", async
 	const { tool } = setup();
 	assert.equal(tool.label, "Consult Read-only Subagent");
 	assert.match(tool.description, /read-only/i);
+	const guidance = tool.promptGuidelines?.join("\n") ?? "";
+	assert.match(guidance, /bounded read-only evidence.*independent perspective.*worth.*wait/i);
+	assert.match(guidance, /ordinary planning.*review.*main agent.*skills.*deterministic checks/i);
 	assert.equal(tool.parameters.additionalProperties, false);
 	assert.deepEqual(tool.parameters.required?.sort(), ["agent", "task"]);
 	assert.equal(tool.parameters.properties?.agentScope?.default, "user");
@@ -167,7 +171,7 @@ test("subagent_consult bounds unknown-agent recovery metadata", async () => {
 		assert.equal(requests.length, 0);
 		assert.ok(Buffer.byteLength(message, "utf8") <= 6 * 1024);
 		assert.doesNotMatch(message, /x{200}/);
-		assert.match(message, /11 additional agent definitions? omitted/);
+		assert.match(message, /10 additional agent definitions? omitted/);
 
 		rmSync(agentsDir, { recursive: true, force: true });
 		writeFileSync(agentsDir, "not a directory");

@@ -102,7 +102,7 @@ test("next-turn completion delivery never wakes an idle root", () => {
 	broker.flush();
 
 	assert.equal(harness.sent.length, 1);
-	assert.deepEqual(harness.sent[0]?.options, { deliverAs: "steer", triggerTurn: false });
+	assert.deepEqual(harness.sent[0]?.options, { deliverAs: "steer" });
 	assert.equal(harness.sent[0]?.message.customType, "pi-subagent-completion");
 	assert.match(String(harness.sent[0]?.message.content), /Agent ID: sa_one/);
 	assert.deepEqual(harness.sent[0]?.message.details, {
@@ -112,8 +112,47 @@ test("next-turn completion delivery never wakes an idle root", () => {
 		generation: 1,
 		agentId: "sa_one",
 		agent: "explorer",
+		task: "task:sa_one",
 		state: "completed",
 	});
+	broker.close();
+});
+
+test("active-turn next-turn delivery queues once for context acknowledgement", () => {
+	const queuedSteering: Record<string, unknown>[] = [];
+	const insertedImmediately: Record<string, unknown>[] = [];
+	const acknowledged: string[] = [];
+	const broker = new CompletionDeliveryBroker(
+		{
+			sendMessage(message: Record<string, unknown>, options?: { triggerTurn?: boolean }) {
+				if (options?.triggerTurn !== false) queuedSteering.push(message);
+				else insertedImmediately.push(message);
+			},
+		} as never,
+		{ isIdle: () => false, hasPendingMessages: () => false },
+		"next-turn",
+		{
+			onAcknowledged: (completions) => {
+				acknowledged.push(...completions.map((value) => value.completionId));
+			},
+		},
+	);
+	broker.enqueue(completion("sa_streaming"));
+	broker.flush();
+
+	assert.equal(queuedSteering.length, 1);
+	assert.equal(insertedImmediately.length, 0);
+	broker.onParentContext([
+		{
+			role: "custom",
+			customType: "pi-subagent-completion",
+			details: queuedSteering[0]?.details,
+		},
+	]);
+	broker.flush();
+
+	assert.deepEqual(acknowledged, ["completion:sa_streaming:1"]);
+	assert.equal(queuedSteering.length, 1);
 	broker.close();
 });
 
@@ -139,6 +178,7 @@ test("auto-resume batches simultaneous completions into one root synthesis turn"
 				generation: 1,
 				agentId: "sa_one",
 				agent: "explorer",
+				task: "task:sa_one",
 				state: "completed",
 			},
 			{
@@ -148,6 +188,7 @@ test("auto-resume batches simultaneous completions into one root synthesis turn"
 				generation: 1,
 				agentId: "sa_two",
 				agent: "explorer",
+				task: "task:sa_two",
 				state: "completed",
 			},
 		],
@@ -192,10 +233,7 @@ test("large completion bursts stay bounded and request only one synthesis turn",
 	assert.equal(harness.sent.length, 2);
 	assert.deepEqual(
 		harness.sent.map((entry) => entry.options),
-		[
-			{ deliverAs: "steer", triggerTurn: false },
-			{ deliverAs: "steer", triggerTurn: true },
-		],
+		[{ deliverAs: "steer" }, { deliverAs: "steer", triggerTurn: true }],
 	);
 	assert.ok(Buffer.byteLength(String(harness.sent[0]?.message.content), "utf8") <= 50 * 1024);
 	broker.close();
@@ -216,7 +254,7 @@ test("auto-resume allows only one in-flight wake until the parent starts", () =>
 		harness.sent.map((entry) => entry.options),
 		[
 			{ deliverAs: "steer", triggerTurn: true },
-			{ deliverAs: "steer", triggerTurn: false },
+			{ deliverAs: "steer" },
 			{ deliverAs: "steer", triggerTurn: true },
 		],
 	);
@@ -249,7 +287,7 @@ test("changing delivery policy flushes an active-root batch without waiting for 
 	assert.equal(harness.sent.length, 0);
 	broker.setDelivery("next-turn");
 	broker.flush();
-	assert.deepEqual(harness.sent[0]?.options, { deliverAs: "steer", triggerTurn: false });
+	assert.deepEqual(harness.sent[0]?.options, { deliverAs: "steer" });
 	broker.close();
 });
 
@@ -258,7 +296,7 @@ test("auto-resume lets pending user input suppress its wake", () => {
 	const broker = new CompletionDeliveryBroker(harness.pi as never, harness.ctx, "auto-resume");
 	broker.enqueue(completion("sa_pending"));
 	broker.flush();
-	assert.deepEqual(harness.sent[0]?.options, { deliverAs: "steer", triggerTurn: false });
+	assert.deepEqual(harness.sent[0]?.options, { deliverAs: "steer" });
 	broker.close();
 });
 
