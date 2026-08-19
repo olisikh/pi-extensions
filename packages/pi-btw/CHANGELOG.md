@@ -1,5 +1,29 @@
 # @narumitw/pi-btw
 
+## 0.54.1
+
+### Patch Changes
+
+- Updated dependencies [8bead31]
+  - @narumitw/pi-tui-kit@0.56.0
+
+## 0.54.0
+
+### Minor Changes
+
+- b5c0682: Add native mouse-wheel and trackpad scrolling to side-thread transcript history.
+
+## 0.53.0
+
+### Minor Changes
+
+- d97edfd: Add a native main-session tree picker that starts a fresh side thread from any selected branch without switching the main conversation.
+
+### Patch Changes
+
+- Updated dependencies [3176172]
+  - @narumitw/pi-tui-kit@0.55.0
+
 ## 0.52.0
 
 ### Minor Changes
