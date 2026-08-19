@@ -40,6 +40,7 @@
 	},
 	"scripts": {
 		"build": "node ./scripts/build.mjs",
+		"prepare": "npm run build",
 		"prepack": "npm run build",
 		"check": "biome check src test scripts package.json tsconfig.json tsconfig.build.json && npm run typecheck && npm run build",
 		"format": "biome check --write src test scripts package.json tsconfig.json tsconfig.build.json",
