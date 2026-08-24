@@ -1,5 +1,34 @@
 # @narumitw/pi-file-context
 
+## 0.54.1
+
+### Patch Changes
+
+- Updated dependencies [b9eba3a]
+  - @narumitw/pi-tui-kit@0.58.0
+
+## 0.54.0
+
+### Minor Changes
+
+- 64480f8: Promote the extension to stable, include it in root Git installations, and remove its experimental startup warning.
+
+## 0.53.3
+
+### Patch Changes
+
+- 1c7d26c: Use Ctrl+Shift+X as the default browser shortcut and configure it safely from the File Context Settings menu.
+- 01457d0: Browse discovered project folders hierarchically while keeping global file and content search.
+- e2a2055: Open current worktree files in Pi's configured external editor from File Preview and show effective preview shortcuts.
+- Updated dependencies [8540d0f]
+  - @narumitw/pi-tui-kit@0.57.1
+
+## 0.53.2
+
+### Patch Changes
+
+- 30bc076: Load each extension from a generated TypeScript runtime to reduce Jiti package startup work while preserving existing first-use boundaries.
+
 ## 0.53.1
 
 ### Patch Changes

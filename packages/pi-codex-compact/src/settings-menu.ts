@@ -1,5 +1,6 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { MenuDefinition } from "@narumitw/pi-tui-kit";
+import { usesCodexResponsesApi } from "./model-api.js";
 import type {
 	CodexCompactSettings,
 	CodexCompactSettingsRuntime,
@@ -22,7 +23,7 @@ export interface SettingsMenuOwner {
 
 interface CompactMenuStatus {
 	model: string;
-	remoteCompatible: boolean;
+	remoteEligible: boolean;
 }
 
 function safeText(value: string): string {
@@ -102,7 +103,7 @@ export function createCodexCompactMenu(
 					{
 						id: "enabled",
 						label: "Remote compaction",
-						description: "Use Codex Remote V2 when the active model is compatible.",
+						description: "Use Codex Remote V2 when the model uses openai-codex-responses.",
 						currentValue: state.settings.enabled ? "On" : "Off",
 						values: ["On", "Off"],
 						action: "set-enabled",
@@ -217,11 +218,11 @@ export async function showCodexCompactMenu(
 	});
 }
 
-function compactMenuStatus(ctx: ExtensionCommandContext): CompactMenuStatus {
+export function compactMenuStatus(ctx: ExtensionCommandContext): CompactMenuStatus {
 	const model = ctx.model;
 	return {
 		model: model ? `${model.provider}/${model.id}` : "none",
-		remoteCompatible: model?.provider === "openai-codex" && model.api === "openai-codex-responses",
+		remoteEligible: usesCodexResponsesApi(model),
 	};
 }
 
@@ -230,5 +231,5 @@ function compactRoute(
 	status: CompactMenuStatus | undefined,
 ): string {
 	if (!state.settings.enabled) return "Pi native (Remote V2 off)";
-	return status?.remoteCompatible ? "Codex Remote V2" : "Pi native (model not compatible)";
+	return status?.remoteEligible ? "Codex Remote V2" : "Pi native (requires openai-codex-responses)";
 }

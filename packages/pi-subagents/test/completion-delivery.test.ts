@@ -67,6 +67,53 @@ test("completion delivery acknowledges one deterministic timestamp when the pare
 	broker.close();
 });
 
+test("completion delivery reports accepted and failed send attempts", () => {
+	const attempts: Array<{
+		ids: string[];
+		delivery: string;
+		triggerTurn: boolean;
+		outcome: string;
+	}> = [];
+	let sends = 0;
+	const broker = new CompletionDeliveryBroker(
+		{
+			sendMessage() {
+				sends += 1;
+				if (sends === 1) throw new Error("primary failed");
+			},
+		} as never,
+		{ isIdle: () => true, hasPendingMessages: () => false },
+		"next-turn",
+		{
+			onDeliveryAttempt: (completions, input) => {
+				attempts.push({
+					ids: completions.map((value) => value.completionId),
+					delivery: input.delivery,
+					triggerTurn: input.triggerTurn,
+					outcome: input.outcome,
+				});
+			},
+		},
+	);
+	broker.enqueue(completion("sa_fallback"));
+	broker.flush();
+	assert.deepEqual(attempts, [
+		{
+			ids: ["completion:sa_fallback:1"],
+			delivery: "steer",
+			triggerTurn: false,
+			outcome: "failed",
+		},
+		{
+			ids: ["completion:sa_fallback:1"],
+			delivery: "nextTurn",
+			triggerTurn: false,
+			outcome: "accepted",
+		},
+	]);
+	broker.close();
+});
+
 test("an unobserved asynchronous injection remains pending for retry", () => {
 	const harness = deliveryHarness();
 	const acknowledged: string[] = [];
@@ -196,6 +243,23 @@ test("auto-resume batches simultaneous completions into one root synthesis turn"
 	broker.close();
 });
 
+test("batched completions preserve model-visible payload for every acknowledged identity", () => {
+	const harness = deliveryHarness();
+	const broker = new CompletionDeliveryBroker(harness.pi as never, harness.ctx, "auto-resume");
+	broker.enqueue(completion("sa_large_one", `VISIBLE_ONE\n${"a".repeat(50 * 1024)}`));
+	broker.enqueue(completion("sa_large_two", `VISIBLE_TWO\n${"b".repeat(50 * 1024)}`));
+	broker.flush();
+
+	assert.equal(harness.sent.length, 1);
+	const content = String(harness.sent[0]?.message.content);
+	assert.ok(Buffer.byteLength(content, "utf8") <= 50 * 1024);
+	assert.match(content, /Completion ID: completion:sa_large_one:1/);
+	assert.match(content, /VISIBLE_ONE/);
+	assert.match(content, /Completion ID: completion:sa_large_two:1/);
+	assert.match(content, /VISIBLE_TWO/);
+	broker.close();
+});
+
 test("completion delivery deduplicates the same completion identity", () => {
 	const harness = deliveryHarness();
 	const broker = new CompletionDeliveryBroker(harness.pi as never, harness.ctx, "next-turn");
@@ -209,6 +273,16 @@ test("completion delivery deduplicates the same completion identity", () => {
 		String(harness.sent[0]?.message.content),
 		/Completion ID: completion:sa_duplicate:1/,
 	);
+	broker.onParentContext([
+		{
+			role: "custom",
+			customType: "pi-subagent-completion",
+			details: harness.sent[0]?.message.details,
+		},
+	]);
+	broker.enqueue(value);
+	broker.flush();
+	assert.equal(harness.sent.length, 1, "acknowledgement retains same-session deduplication");
 	broker.close();
 });
 
@@ -261,33 +335,49 @@ test("auto-resume allows only one in-flight wake until the parent starts", () =>
 	broker.close();
 });
 
-test("auto-resume holds active-turn completions until settlement", () => {
+test("auto-resume steers staggered active-turn completions without a duplicate idle wake", () => {
 	const options = { idle: false, pending: false };
 	const harness = deliveryHarness(options);
-	const broker = new CompletionDeliveryBroker(harness.pi as never, harness.ctx, "auto-resume");
-	broker.enqueue(completion("sa_active"));
+	const acknowledged: string[] = [];
+	const broker = new CompletionDeliveryBroker(harness.pi as never, harness.ctx, "auto-resume", {
+		onAcknowledged: (completions) => {
+			acknowledged.push(...completions.map((value) => value.completionId));
+		},
+	});
+	broker.enqueue(completion("sa_active_one"));
 	broker.flush();
-	assert.equal(harness.sent.length, 0);
+	broker.enqueue(completion("sa_active_two"));
+	broker.flush();
+
+	assert.deepEqual(
+		harness.sent.map((entry) => entry.options),
+		[{ deliverAs: "steer" }, { deliverAs: "steer" }],
+	);
+	broker.onParentContext(
+		harness.sent.map((entry) => ({
+			role: "custom",
+			customType: "pi-subagent-completion",
+			details: entry.message.details,
+		})),
+	);
+	assert.deepEqual(acknowledged, ["completion:sa_active_one:1", "completion:sa_active_two:1"]);
 
 	options.idle = true;
 	broker.onParentSettled();
 	broker.flush();
-	assert.deepEqual(harness.sent[0]?.options, { deliverAs: "steer", triggerTurn: true });
-	broker.onParentSettled();
-	broker.flush();
-	assert.equal(harness.sent.length, 1);
+	assert.equal(harness.sent.length, 2);
 	broker.close();
 });
 
-test("changing delivery policy flushes an active-root batch without waiting for settlement", () => {
+test("changing delivery policy after active steering does not duplicate the batch", () => {
 	const harness = deliveryHarness({ idle: false });
 	const broker = new CompletionDeliveryBroker(harness.pi as never, harness.ctx, "auto-resume");
 	broker.enqueue(completion("sa_policy"));
 	broker.flush();
-	assert.equal(harness.sent.length, 0);
+	assert.deepEqual(harness.sent[0]?.options, { deliverAs: "steer" });
 	broker.setDelivery("next-turn");
 	broker.flush();
-	assert.deepEqual(harness.sent[0]?.options, { deliverAs: "steer" });
+	assert.equal(harness.sent.length, 1);
 	broker.close();
 });
 

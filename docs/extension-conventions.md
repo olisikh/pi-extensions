@@ -55,8 +55,8 @@ it is not an API reference.
 - **MUST:** Treat installed extension code as fully privileged and load only trusted sources.
   **Verification:** `Review` of installation documentation and any code-loading path.
 
-A package may declare multiple entrypoints, but this repository deliberately uses one forwarding
-entrypoint per active package as described below.
+Pi packages may declare multiple entrypoints, but this repository deliberately declares exactly one entrypoint per active extension.
+The repository always keeps a source forwarder and may publish either that source entrypoint or a build-backed TypeScript bundle for Pi's Jiti loader, as described below.
 
 ### Factory and lifecycle
 
@@ -123,17 +123,16 @@ interactive work should expose cancellation.
 
 ### Package layout and boundaries
 
-- **MUST:** Keep every active extension and reusable publishable library under
-  `packages/<package>/`, and deprecated references under `deprecated/<package>/`. Give each extension
-  explicit `piExtension.lifecycle` metadata with value `stable` or `experimental`; omit that metadata
-  from libraries. The private root Pi manifest must list every stable extension entrypoint and no
-  experimental entrypoint so direct Git installation preserves the lifecycle boundary.
+- **MUST:** Keep every active extension and reusable publishable library under `packages/<package>/`, and deprecated references under `deprecated/<package>/`.
+  Give each extension explicit `piExtension.lifecycle` metadata with value `stable` or `experimental`; omit that metadata from libraries.
+  The private root Pi manifest must list every stable extension's `src/index.ts` repository entrypoint and no experimental entrypoint so direct Git installation preserves the lifecycle boundary without requiring generated package output.
   **Verification:** `Validator` via `npm run check:boundaries` plus `Review` of lifecycle moves.
-- **MUST:** Give every active extension a thin `src/index.ts` default-export forwarder and declare
-  exactly `"pi": { "extensions": ["./src/index.ts"] }`; keep implementation in descriptive modules.
-  Reusable libraries must not declare `pi.extensions` or `piExtension` and must publish built
-  JavaScript plus declarations. **Verification:** `Validator` via `npm run check:boundaries` and a
-  clean-build package smoke.
+- **MUST:** Give every active extension a thin `src/index.ts` default-export forwarder and keep authoritative implementation under `src/` in descriptive modules.
+  Declare exactly one package entrypoint: `"pi": { "extensions": ["./src/index.ts"] }` for direct source loading or `"pi": { "extensions": ["./dist/index.ts"] }` for a build-backed TypeScript bundle loaded by Pi's Jiti runtime.
+  A `dist/index.ts` entrypoint must be produced by the package build, must not forward back into `src/`, and must keep Pi-bundled peer dependencies external rather than embedding duplicate runtime copies.
+  A package that declares `dist/index.ts` must publish `dist`, run its build before packing, and document that an unbuilt local checkout must be built before loading the package directory.
+  Reusable libraries must not declare `pi.extensions` or `piExtension` and must publish built JavaScript plus declarations.
+  **Verification:** `Validator` via `npm run check:boundaries`, `Review` of the bundle boundary, and clean-build package and Pi load smokes.
 - **MUST:** Keep extension packages free of extension-to-extension dependencies. Extensions may
   depend on publishable helper libraries under `packages/`.
   **Verification:** `Validator` via `npm run check:boundaries`.
@@ -152,9 +151,30 @@ interactive work should expose cancellation.
   notices and licenses. **Verification:** `Smoke` with `npm pack --workspace <name> --dry-run --json`
   for package or publishing changes.
 
-Use lowercase `pi-*` package directories and `@narumitw/pi-*` npm names. Keep packages small and
-self-contained, add dependencies only for current runtime needs, and review source files over 1,000
-lines for responsibility-based decomposition rather than mechanical splitting.
+Use lowercase `pi-*` package directories and `@narumitw/pi-*` npm names.
+Keep packages small and self-contained, add dependencies only for current runtime needs, and review source files over 1,000 lines for responsibility-based decomposition rather than mechanical splitting.
+
+#### Build-backed Jiti runtimes
+
+An extension **SHOULD** adopt a generated split runtime when a repeatable separate-process benchmark shows that Jiti processing of its package-owned TypeScript graph materially contributes to package-load time.
+Do not add a generated runtime to a small extension without measured startup evidence because the build and release path has an ongoing maintenance cost.
+Use JavaScript syntax with a `.ts` output extension when Pi must load the generated files through its Jiti runtime.
+
+- **MUST:** Bundle only package-owned source into the generated runtime and keep every package import external so Pi peers and third-party dependencies resolve from the installing package's own module root.
+  **Verification:** `Review` of bundler metadata and generated imports plus a builder `Test` that rejects bundled `node_modules` inputs.
+- **MUST:** Preserve every intentional dynamic-import boundary so commands, menus, optional integrations, and first-use implementations do not become eager merely because the source graph is bundled.
+  **Verification:** `Test` of the generated eager graph plus `Review` of source and output imports.
+- **MUST:** Keep every generated static or dynamic relative import aligned with the exact emitted file path and extension.
+  Do not rewrite an import extension unless the build renames its referenced file in the same staged output.
+  **Verification:** A builder `Test` must inventory generated relative imports and reject every missing target before publication.
+- **MUST:** Generate deterministic source-mapped output in a staging directory, validate it before publication, and replace the previous `dist` atomically so a failed build does not publish partial or stale chunks.
+  **Verification:** `Test` of repeated builds, stale-chunk removal, failed validation, and failed publication recovery.
+- **MUST:** Exercise the generated entry with Pi's Jiti resource loader rather than relying only on a direct test-runner import, and preserve the extension's registration plus startup and shutdown behavior.
+  When the output has lazy chunks, the generated-entry test must trigger a representative lazy boundary because initial entry loading does not resolve every deferred import.
+  **Verification:** `Test` through `DefaultResourceLoader`, generated lifecycle and lazy-boundary tests, and a package-directory Pi load `Smoke`.
+
+Record before-and-after package-load samples in the change handoff, but do not enforce a timing threshold in deterministic tests because host and filesystem conditions vary.
+The existing build-backed entrypoint, package-content, clean-build, pack, and local-load rules remain applicable.
 
 ### Slash commands and menus
 
@@ -247,6 +267,8 @@ restore the latest remaining activity rather than letting one completion clear i
 
 ### Documentation and verification
 
+[`docs/readme-conventions.md`](readme-conventions.md) owns the shared structure, labels, applicability rules, and verification checklist for active package READMEs.
+
 Package READMEs **SHOULD** remain practical and scannable: capabilities, installation, usage,
 commands/tools/settings, operational behavior, package layout, keywords, and license. Apply these
 shared presentation conventions:
@@ -271,9 +293,10 @@ to use the extension safely.
   requires a real Pi runtime or external service, record and run the smallest representative smoke
   instead. **Verification:** `Test` through root `npm test`, `Smoke` for the stated runtime path, and
   `Review` of any intentionally untested behavior.
-- **MUST:** Run the repository CI-equivalent gate before completing a change, and add an npm pack dry
-  run or local Pi load when package metadata or runtime loading changed. **Verification:** `Validator`
-  via `npm run check`; applicable `Smoke` evidence in the change handoff.
+- **MUST:** Run both repository verification gates before completing a change, and add an npm pack
+  dry run or local Pi load when package metadata or runtime loading changed. **Verification:**
+  `Validator` via `npm run check`, `Test` via `npm test`, and applicable `Smoke` evidence in the change
+  handoff.
 
 Do not create a validator merely because a convention is written down. Add one when a new or touched
 area has a stable, low-false-positive rule that can be checked without encoding product semantics in
@@ -283,7 +306,7 @@ fragile regular expressions. Until then, label the real verification method hone
 
 - [ ] Place the package under `packages/`, declare the correct extension lifecycle when applicable,
       and keep it independently installable.
-- [ ] Add the thin `src/index.ts` forwarder and canonical `pi.extensions` manifest entry.
+- [ ] Add the thin `src/index.ts` forwarder and declare one supported `pi.extensions` entrypoint: direct `src/index.ts` or build-backed `dist/index.ts`.
 - [ ] Separate factory registration from session-owned startup and idempotent shutdown cleanup.
 - [ ] Choose the primary command and no-argument behavior from the extension's product role; use a
       menu-first manager unless a concrete reason supports another shape, and add direct routes only
@@ -293,7 +316,7 @@ fragile regular expressions. Until then, label the real verification method hone
 - [ ] Follow `docs/extension-settings.md` for every user or project setting.
 - [ ] Bound tool output, cancellation, state persistence, and file mutation where applicable.
 - [ ] Document installation, behavior, settings, security, limitations, and source responsibilities.
-- [ ] Add deterministic tests and run `npm run check`.
+- [ ] Add deterministic tests, run `npm run check`, and run `npm test`.
 - [ ] Inspect `npm pack --workspace <name> --dry-run --json` and load the declared entrypoint with Pi.
 
 ## Touched-area checklist
@@ -304,6 +327,6 @@ fragile regular expressions. Until then, label the real verification method hone
 - [ ] For command-surface changes, preserve established routes or explicitly own an approved breaking
       migration, and test every claimed execution mode.
 - [ ] Update focused tests and run the verification method named by each relevant MUST.
-- [ ] Run `npm run check`; add pack or Pi runtime smokes when metadata or loading changed.
+- [ ] Run `npm run check` and `npm test`; add pack or Pi runtime smokes when metadata or loading changed.
 - [ ] Report any skipped check, accepted exception, or follow-up validator opportunity in the change
       handoff.

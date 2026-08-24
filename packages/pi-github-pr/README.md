@@ -1,21 +1,19 @@
-# 🔎 pi-github-pr — GitHub Pull Request Statusline for Pi Agents
+# 🔎 pi-github-pr — See Current Pull Request Status in Pi
 
 [![npm](https://img.shields.io/npm/v/@narumitw/pi-github-pr)](https://www.npmjs.com/package/@narumitw/pi-github-pr) [![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-`@narumitw/pi-github-pr` is a passive [Pi coding agent](https://pi.dev) extension that shows the current branch GitHub pull request status in Pi's statusline.
+See the current branch's GitHub pull request number, checks, review state, and discussion count directly in Pi's statusline.
 
-It only reads PR metadata for the current branch. It counts comments and reviews, but does not fetch or display comment bodies, review text, or review-thread content.
-
-It is intentionally ambient: no slash command, no custom tool, no widget, and no comment injection.
+The extension reads only PR metadata and remains passive, with no command, model tool, widget, or injected content.
 
 ## ✨ Features
 
-- Automatically shows compact PR status in Pi's statusline.
-- Refreshes the current branch PR every minute and after agent turns.
-- Shows PR number, GitHub checks state, review state, and comment/review count.
-- Does not read or expose PR discussion text; use `gh pr view --comments` or GitHub directly when you need the conversation.
-- Uses GitHub CLI auth and repository resolution; the extension stores no GitHub token.
-- No slash commands, LLM tools, widgets, webhook server, or separate runtime service.
+- Shows compact PR number, checks, review state, and combined comment/review count.
+- Starts the initial refresh in the background without delaying Pi startup.
+- Refreshes once per minute and after agent turns.
+- Uses GitHub CLI authentication and repository resolution without storing a token.
+- Never reads or displays discussion bodies, review text, or review threads.
+- Runs without commands, model tools, widgets, webhooks, or a separate service.
 
 Example statusline text:
 
@@ -26,9 +24,9 @@ PR #123: checks pending (5), commented, 12 comments
 PR #123: no checks, draft, no comments
 ```
 
-The check wording follows GitHub's Checks terminology. The trailing comment count is the
-combined comments + reviews count. When rendered by `pi-statusline`, the `github-pr` icon comes
-from pi-statusline icon settings.
+The check wording follows GitHub's Checks terminology.
+The trailing comment count is the combined comments + reviews count.
+When rendered by `pi-statusline`, the `github-pr` icon comes from pi-statusline icon settings.
 
 ## 📦 Install
 
@@ -45,8 +43,11 @@ pi -e npm:@narumitw/pi-github-pr
 Try this package locally from the repository root:
 
 ```bash
+npm --workspace @narumitw/pi-github-pr run build
 pi -e ./packages/pi-github-pr
 ```
+
+An unbuilt local checkout must be built before loading the package directory.
 
 ## ⚙️ Prerequisites
 
@@ -59,22 +60,28 @@ gh auth login
 gh auth login --hostname github.example.com:8443
 ```
 
-The extension shells out to `gh`; GitHub Enterprise hosts and credential storage are delegated to `gh`. It uses the PR URL host (including any port) for follow-up API calls, so no manual `GH_HOST` is required.
+The extension shells out to `gh`; GitHub Enterprise hosts and credential storage are delegated to `gh`.
+It uses the PR URL host (including any port) for follow-up API calls, so no manual `GH_HOST` is required.
+
+## 🚀 Quick start
+
+Start Pi inside a Git worktree after authenticating `gh`.
+The extension automatically shows the current branch's pull request status and does not register a command or model tool.
 
 ## 💬 Behavior
 
 The extension runs passively:
 
-- On session start, it checks the current branch PR and sets a compact statusline entry.
+- On session start, it begins checking the current branch PR in the background and sets a compact statusline entry when the check completes.
 - On Git branch change, it clears the old PR immediately and refreshes the new current branch.
 - While the session remains open, it refreshes that same current branch PR every 60 seconds and after each agent turn.
 - When an agent turn is aborted, it keeps the last successful PR status instead of treating cancellation as a GitHub failure.
-- On branch change, session replacement, or session shutdown, it cancels the previous refresh timer and any in-flight periodic request.
+- On branch change, session replacement, or session shutdown, it cancels the previous refresh timer and applicable in-flight initialization or refresh request.
 - On session shutdown, it clears the statusline entry.
 - If the directory has no GitHub PR, the statusline entry stays empty.
 - If `gh` is missing or unauthenticated, the statusline shows a short hint such as `PR gh missing` or `PR gh auth`.
 
-## Known limits
+## 🚧 Limitations
 
 - Requires `gh`; there is no direct GitHub API, `GITHUB_TOKEN` fallback, or manual `GH_HOST` requirement.
 - Only the current branch PR is shown; there is no command or tool for arbitrary PR lookup.
@@ -82,20 +89,23 @@ The extension runs passively:
 - It does not read PR comment bodies, review bodies, inline diff comments, or unresolved review-thread text.
 - While a session is open, refresh runs every 60 seconds in addition to session start, branch changes, and agent turns; each refresh invokes `gh pr view` and one GraphQL count query.
 
-## 📁 Package layout
+## 🗂️ Package layout
 
 ```text
 packages/pi-github-pr/
 ├── src/index.ts
 ├── src/github-pr.ts
+├── dist/index.ts
+├── scripts/build-runtime.mjs
 ├── test/github-pr.test.ts
+├── test/build-runtime.test.ts
 ├── package.json
 ├── README.md
 ├── LICENSE
 └── tsconfig.json
 ```
 
-## 🏷️ Keywords
+## 🔎 Keywords
 
 `pi-package`, `pi-extension`, `github`, `pull-request`, `statusline`, `gh`
 

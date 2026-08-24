@@ -1,5 +1,39 @@
 # @narumitw/pi-goal
 
+## 0.53.2
+
+### Patch Changes
+
+- 3346683: Publish generated lazy chunks at the JavaScript paths referenced by each extension runtime so deferred menus and implementations load correctly through Pi's Jiti loader.
+- Updated dependencies [b9eba3a]
+  - @narumitw/pi-tui-kit@0.58.0
+
+## 0.53.1
+
+### Patch Changes
+
+- 4098679: Keep token-budget accounting out of leading system instructions and preserve the post-activation provider request prefix across Goal continuation and wait resume.
+
+## 0.53.0
+
+### Minor Changes
+
+- b23a1bc: Coordinate automatically executable Goals through Workflow Mutex Protocol v1 and stop Goal-owned work immediately at terminal limits.
+
+## 0.52.3
+
+### Patch Changes
+
+- Updated dependencies [6574232]
+- Updated dependencies [cddc265]
+  - @narumitw/pi-tui-kit@0.57.0
+
+## 0.52.2
+
+### Patch Changes
+
+- 30bc076: Load each extension from a generated TypeScript runtime to reduce Jiti package startup work while preserving existing first-use boundaries.
+
 ## 0.52.1
 
 ### Patch Changes

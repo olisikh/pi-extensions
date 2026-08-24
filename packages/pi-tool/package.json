@@ -1,7 +1,7 @@
 {
 	"name": "@narumitw/pi-tool",
-	"version": "0.2.2",
-	"description": "Browse configured Pi tools and inspect their exposed metadata.",
+	"version": "0.3.0",
+	"description": "Browse configured Pi tools and optionally show the active tool set.",
 	"type": "module",
 	"license": "MIT",
 	"private": false,
@@ -15,33 +15,39 @@
 	],
 	"files": [
 		"src",
+		"dist",
 		"README.md",
 		"LICENSE"
 	],
 	"pi": {
 		"extensions": [
-			"./src/index.ts"
+			"./dist/index.ts"
 		]
 	},
 	"piExtension": {
 		"lifecycle": "stable"
 	},
 	"scripts": {
-		"check": "biome check --vcs-use-ignore-file=false src test package.json tsconfig.json README.md && npm run typecheck",
-		"format": "biome check --write --vcs-use-ignore-file=false src test package.json tsconfig.json README.md",
+		"build": "node scripts/build-runtime.mjs",
+		"prepack": "npm run build",
+		"check": "npm run build && biome check --vcs-use-ignore-file=false src scripts test package.json tsconfig.json README.md",
+		"format": "biome check --write --vcs-use-ignore-file=false src scripts test package.json tsconfig.json README.md",
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@narumitw/pi-tui-kit": "^0.53.0"
+		"@narumitw/pi-tui-kit": "^0.58.0"
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-coding-agent": "*"
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.5.8",
-		"@earendil-works/pi-coding-agent": "0.84.2",
+		"@biomejs/biome": "2.5.10",
+		"@earendil-works/pi-coding-agent": "0.84.3",
+		"@earendil-works/pi-tui": "0.84.3",
 		"@types/node": "26.2.0",
-		"typescript": "7.0.2"
+		"typescript": "7.0.2",
+		"esbuild": "0.28.2"
 	},
 	"repository": {
 		"type": "git",

@@ -1,5 +1,38 @@
 # @narumitw/pi-starship
 
+## 0.52.2
+
+### Patch Changes
+
+- 3346683: Publish generated lazy chunks at the JavaScript paths referenced by each extension runtime so deferred menus and implementations load correctly through Pi's Jiti loader.
+- Updated dependencies [b9eba3a]
+  - @narumitw/pi-tui-kit@0.58.0
+
+## 0.52.1
+
+### Patch Changes
+
+- Updated dependencies [6574232]
+- Updated dependencies [cddc265]
+  - @narumitw/pi-tui-kit@0.57.0
+
+## 0.52.0
+
+### Minor Changes
+
+- 7a61fe5: Add nested configuration views for effective public TOML and the exact loaded settings document, plus a validated preview-and-confirm reload workflow for external edits and file removal.
+
+### Patch Changes
+
+- Updated dependencies [f47364f]
+  - @narumitw/pi-tui-kit@0.56.1
+
+## 0.51.5
+
+### Patch Changes
+
+- 37bf862: Load the extension from a generated split TypeScript runtime to reduce Jiti package startup work while preserving lazy command and collector boundaries.
+
 ## 0.51.4
 
 ### Patch Changes

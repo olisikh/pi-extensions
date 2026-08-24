@@ -1,6 +1,6 @@
 {
 	"name": "@narumitw/pi-starship",
-	"version": "0.51.4",
+	"version": "0.52.2",
 	"description": "Native Starship-style TOML statusline for the Pi coding agent.",
 	"type": "module",
 	"license": "MIT",
@@ -16,25 +16,28 @@
 	],
 	"files": [
 		"src",
+		"dist",
 		"README.md",
 		"LICENSE",
 		"NOTICES.md"
 	],
 	"pi": {
 		"extensions": [
-			"./src/index.ts"
+			"./dist/index.ts"
 		]
 	},
 	"piExtension": {
 		"lifecycle": "stable"
 	},
 	"scripts": {
-		"check": "biome check --vcs-use-ignore-file=false src test package.json tsconfig.json README.md NOTICES.md && npm run typecheck",
-		"format": "biome check --write --vcs-use-ignore-file=false src test package.json tsconfig.json README.md NOTICES.md",
+		"build": "node scripts/build-runtime.mjs",
+		"check": "npm run build && biome check --vcs-use-ignore-file=false src test scripts package.json tsconfig.json README.md NOTICES.md && npm run typecheck",
+		"format": "biome check --write --vcs-use-ignore-file=false src test scripts package.json tsconfig.json README.md NOTICES.md",
+		"prepack": "npm run build",
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@narumitw/pi-tui-kit": "^0.56.0",
+		"@narumitw/pi-tui-kit": "^0.58.0",
 		"smol-toml": "^1.8.0",
 		"yaml": "^2.9.0"
 	},
@@ -43,10 +46,11 @@
 		"@earendil-works/pi-tui": "*"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.5.8",
-		"@earendil-works/pi-coding-agent": "0.84.2",
-		"@earendil-works/pi-tui": "0.84.2",
+		"@biomejs/biome": "2.5.10",
+		"@earendil-works/pi-coding-agent": "0.84.3",
+		"@earendil-works/pi-tui": "0.84.3",
 		"@types/node": "26.2.0",
+		"esbuild": "0.28.2",
 		"typescript": "7.0.2"
 	},
 	"repository": {

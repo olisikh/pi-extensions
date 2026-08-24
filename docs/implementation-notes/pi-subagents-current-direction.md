@@ -54,6 +54,7 @@ Use custom verifier agents only when independent child verification is explicitl
 The current recommendation is the user-selected `async-only` workflow, while `all` remains the compatibility default.
 
 `async-only` exposes `subagent_spawn`, `subagent_send`, `subagent_manage`, `subagent_mailbox`, and `subagent_inspect`.
+`all` additionally exposes supported `subagent_await` and `subagent_consult` plus deprecated blocking `subagent` for compatibility.
 
 `subagent_spawn` is preferred only when detached execution creates real parallelism rather than moving the main agent's only useful task into a child.
 
@@ -61,13 +62,18 @@ After spawning one worker, the main agent should immediately continue the named 
 
 Final-answer-dependent detached work needs a supported synthesis path such as opt-in `auto-resume`; default `next-turn` delivery remains appropriate only when the current response does not depend on the result.
 
-Blocking `subagent` remains available for intentional synchronous output, but one ordinary implementation worker should not replace work the main agent could perform directly.
+Blocking `subagent` is deprecated for new work but remains available with its existing schema and execution behavior for established callers and explicit requests whose chain, fan-in, panel, or workflow semantics lack a detached replacement.
 
-`subagent_consult` remains the synchronous read-only exception while its use case is still supported.
+No removal release or date is set until those compatibility modes have a separately approved replacement or migration.
+
+`subagent_consult` remains a supported synchronous read-only exception.
+
+`subagent_await` remains a supported intentional join after useful overlapping parent work is complete.
 
 The four async lifecycle tools remain split because start, follow-up, lifecycle, and queue operations have distinct contracts.
+`subagent_await` remains separate because waiting blocks the parent, its timeout never interrupts the child, and the async-only workflow must omit it.
 
-Changing the default, removing compatibility tools, or consolidating lifecycle tools needs a separate approved migration decision.
+Changing the default, removing deprecated `subagent`, or consolidating lifecycle tools needs a separate approved migration decision.
 
 ## Active follow-ups
 
@@ -79,9 +85,8 @@ New implementation work should respond to demonstrated user needs rather than ex
 
 - The [completed main-agent-led guidance plan](../plans/archived/2026-08-17_pi-subagents-main-agent-led-delegation-guidance-plan.md) records the accepted delegation rubric and verification evidence.
 - The [completed async-first tool-surface plan](../plans/archived/2026-08-17_pi-subagents-async-first-tool-surface-plan.md) records the compatibility and recommendation decisions.
-- [`pi-subagents-capability-matrix.md`](pi-subagents-capability-matrix.md) records maintained capability boundaries.
-- [`pi-subagents-stateful-runtime.md`](pi-subagents-stateful-runtime.md) records detached lifecycle and transport behavior.
-- [`pi-subagents-rpc-v1.md`](pi-subagents-rpc-v1.md) records the RPC transport contract.
+- [`pi-subagents-capability-matrix.md`](pi-subagents-capability-matrix.md) records maintained capability, detached lifecycle, transport, trust, and runtime-ownership boundaries.
+- [`pi-subagents-rpc-v1.md`](pi-subagents-rpc-v1.md) records the persistent RPC transport contract.
 
 ## Historical evidence
 

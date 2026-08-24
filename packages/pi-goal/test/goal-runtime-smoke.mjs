@@ -175,8 +175,11 @@ async function createHarness(
 }
 
 function completionResponse(context) {
-	const goalId = /<goal_id>\s*([^<\s]+)\s*<\/goal_id>/.exec(context.systemPrompt ?? "")?.[1];
-	assert.ok(goalId, "expected goal id in continuation system prompt");
+	const modelContext = [context.systemPrompt ?? "", ...context.messages.map(modelMessageText)].join(
+		"\n",
+	);
+	const goalId = [...modelContext.matchAll(/<goal_id>\s*([^<\s]+)\s*<\/goal_id>/g)].at(-1)?.[1];
+	assert.ok(goalId, "expected goal id in appended Goal context");
 	return fauxAssistantMessage(
 		fauxToolCall("goal_complete", {
 			goal_id: goalId,
@@ -185,14 +188,17 @@ function completionResponse(context) {
 	);
 }
 
-function userMessageText(message) {
-	if (message.role !== "user") return "";
+function modelMessageText(message) {
 	if (typeof message.content === "string") return message.content;
 	if (!Array.isArray(message.content)) return "";
 	return message.content
 		.filter((part) => part?.type === "text")
 		.map((part) => part.text)
 		.join("\n");
+}
+
+function userMessageText(message) {
+	return message.role === "user" ? modelMessageText(message) : "";
 }
 
 async function agentDirectoryIsolationScenario() {
@@ -530,20 +536,17 @@ async function staleBlockedToolAbortScenario() {
 }
 
 async function budgetBoundaryScenario() {
-	const harness = await createHarness([
-		fauxAssistantMessage(fauxToolCall("budget_probe", {})),
-		(context) => {
-			const wrapUp = context.messages.find(
-				(message) => message.role === "custom" && message.customType === "goal-budget-wrap-up",
-			);
-			assert.match(String(wrapUp?.content), /stop substantive work/i);
-			return fauxAssistantMessage("Budget-limited progress summary.");
-		},
-	]);
+	const harness = await createHarness([fauxAssistantMessage(fauxToolCall("budget_probe", {}))]);
 	try {
 		await harness.session.prompt("/goal --tokens 1 budget boundary runtime smoke");
-		await waitFor(() => harness.faux.state.callCount === 2, "budget wrap-up response");
 		await harness.session.agent.waitForIdle();
+		assert.equal(harness.faux.state.callCount, 1, "budget stop must not queue another model call");
+		assert.equal(
+			harness.session.messages.some(
+				(message) => message.role === "custom" && message.customType === "goal-budget-wrap-up",
+			),
+			false,
+		);
 		assert.equal(persistedGoalStatus(harness.session), "budget_limited");
 		assert.equal(
 			harness.lifecycleEvents.filter((event) => event === "tool_execution_end").length,
@@ -560,21 +563,11 @@ async function budgetBoundaryScenario() {
 }
 
 async function budgetViolationScenario() {
-	const harness = await createHarness([
-		fauxAssistantMessage(fauxToolCall("budget_probe", {})),
-		fauxAssistantMessage(fauxToolCall("budget_probe", {})),
-		(_context, options) => {
-			assert.equal(options?.signal?.aborted, true);
-			return fauxAssistantMessage("This aborted response must not start more work.");
-		},
-	]);
+	const harness = await createHarness([fauxAssistantMessage(fauxToolCall("budget_probe", {}))]);
 	try {
-		await harness.session.prompt("/goal --tokens 1 reject wrap-up tools at runtime");
+		await harness.session.prompt("/goal --tokens 1 stop budget tools at runtime");
 		await harness.session.agent.waitForIdle();
-		assert.ok(
-			harness.faux.state.callCount >= 2 && harness.faux.state.callCount <= 3,
-			"budget guard permits only an optional aborted cleanup call",
-		);
+		assert.equal(harness.faux.state.callCount, 1, "budget guard must not queue cleanup work");
 		assert.equal(
 			harness.lifecycleEvents.filter((event) => event === "budget_probe_execute").length,
 			1,
@@ -734,5 +727,5 @@ await managedRunRpcScenario();
 await managedRunDisabledScenario();
 await manualCompactionScenario();
 console.log(
-	"pi-goal runtime smoke: normal, runaway guards, retry and busy-edit ownership, queued input, pause, stale blocked-tool aborts, managed-run RPC, bounded budget behavior, and manual compaction passed",
+	"pi-goal runtime smoke: normal, runaway guards, retry and busy-edit ownership, queued input, pause, stale blocked-tool aborts, managed-run RPC, terminal budget stops, and manual compaction passed",
 );

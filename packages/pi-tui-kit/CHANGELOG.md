@@ -1,5 +1,34 @@
 # @narumitw/pi-tui-kit
 
+## 0.58.0
+
+### Minor Changes
+
+- b9eba3a: Add a width-safe `HorizontalRule` component with inset, labeled, aligned, sanitized, and callback-styled rendering.
+  Use themed top and bottom rules consistently across every standard TUI screen.
+
+## 0.57.1
+
+### Patch Changes
+
+- 8540d0f: Simplify single-question TUI questionnaires with a plain header and immediate answer submission while retaining tabbed Review for multiple questions.
+
+## 0.57.0
+
+### Minor Changes
+
+- 6574232: Add a generic lifecycle-safe questionnaire runner for TUI and RPC interactions.
+
+### Patch Changes
+
+- cddc265: Keep questionnaire hints visible at narrow widths and omit conflicting additive page keys.
+
+## 0.56.1
+
+### Patch Changes
+
+- f47364f: Defer syntax highlighter initialization until a code review first requests it.
+
 ## 0.56.0
 
 ### Minor Changes

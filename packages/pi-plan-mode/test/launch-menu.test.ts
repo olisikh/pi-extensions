@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRpcHarness, createTuiHarness } from "@narumitw/pi-tui-kit/testing";
@@ -14,6 +14,8 @@ import planMode from "../src/plan-mode.js";
 import { readPlanModeSettings } from "../src/settings.js";
 
 const REQUIRED_PLAN_TOOLS = ["plan_mode_question", "plan_mode_complete"];
+const STARTUP_TOOLS = ["read", "write", "custom"];
+const STABLE_TOOLS = [...STARTUP_TOOLS, ...REQUIRED_PLAN_TOOLS];
 
 async function settleWithin<T>(promise: Promise<T>, label: string): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -49,7 +51,7 @@ async function waitForOpenCount(
 
 function launchFixture() {
 	const mock = createMockPi({
-		activeTools: ["read", "write"],
+		activeTools: STABLE_TOOLS,
 		allTools: [builtinTool("read"), builtinTool("write"), extensionTool("custom")],
 	});
 	planMode(mock.pi, { readSettings: async () => ({ kind: "missing" as const }) });
@@ -58,7 +60,7 @@ function launchFixture() {
 
 function launchFixtureWithSettings(readSettings: () => ReturnType<typeof readPlanModeSettings>) {
 	const mock = createMockPi({
-		activeTools: ["read", "write"],
+		activeTools: STABLE_TOOLS,
 		allTools: [builtinTool("read"), builtinTool("write"), extensionTool("custom")],
 	});
 	planMode(mock.pi, { readSettings });
@@ -77,12 +79,12 @@ test("inactive bare /plan opens a TUI launch menu without changing Plan state", 
 	assert.match(frame.join("\n"), /Status: Off/i);
 	assert.match(frame.join("\n"), /Start Plan mode/);
 	assert.ok(frame.every((line) => line.length <= 42));
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "write"]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 	assert.equal(mock.entries.length, 0);
 
 	tui.press("tui.select.cancel");
 	await running;
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "write"]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 	assert.equal(mock.entries.length, 0);
 	assert.equal(mock.sentUserMessages.length, 0);
 });
@@ -107,12 +109,45 @@ test("customized plan-mode shortcut from settings toggles Plan mode", async () =
 	assert.equal(mock.shortcuts.has("ctrl+alt+p"), false);
 
 	await toggle.handler(context.ctx);
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", ...REQUIRED_PLAN_TOOLS]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 	assert.equal(context.statuses.get("plan-mode"), "plan active");
 
 	await toggle.handler(context.ctx);
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "write"]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 	assert.equal(context.statuses.get("plan-mode"), undefined);
+});
+
+test("customized plan-mode shortcut rejects mode changes during an active run", async () => {
+	let idle = false;
+	const mock = launchFixtureWithSettings(async () => ({
+		kind: "loaded" as const,
+		settings: { thinkingLevel: "inherit", toggleShortcut: "ctrl+shift+p" },
+	}));
+	const context = createMockContext({
+		mode: "tui",
+		hasUI: true,
+		isIdle: () => idle,
+	});
+	await mock.events.get("session_start")?.[0]?.({}, context.ctx);
+	const toggle = mock.shortcuts.get("ctrl+shift+p");
+	assert.ok(toggle);
+
+	await toggle.handler(context.ctx);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STARTUP_TOOLS);
+	assert.equal(mock.entries.length, 0);
+	assert.match(context.notifications.at(-1)?.message ?? "", /run is active.*retry/i);
+
+	idle = true;
+	await toggle.handler(context.ctx);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
+	const entriesAfterStart = mock.entries.length;
+
+	idle = false;
+	await toggle.handler(context.ctx);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
+	assert.equal(mock.entries.length, entriesAfterStart);
+	assert.equal(context.statuses.get("plan-mode"), "plan active");
+	assert.match(context.notifications.at(-1)?.message ?? "", /run is active.*retry/i);
 });
 
 test("customized plan-mode shortcut from settings supports ctrl+alt+p", async () => {
@@ -125,11 +160,11 @@ test("customized plan-mode shortcut from settings supports ctrl+alt+p", async ()
 	const toggle = mock.shortcuts.get("ctrl+alt+p");
 	assert.ok(toggle, "custom shortcut should be registered");
 	toggle.handler(context.ctx);
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", ...REQUIRED_PLAN_TOOLS]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 	assert.equal(context.statuses.get("plan-mode"), "plan active");
 
 	toggle.handler(context.ctx);
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "write"]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 	assert.equal(context.statuses.get("plan-mode"), undefined);
 });
 
@@ -147,11 +182,123 @@ test("the inactive launch menu opens Settings without starting Plan mode", async
 	await settleWithin(tui.waitForPending(), "the Settings transition");
 	await waitForOpenCount(tui, 2, running);
 	assert.match(tui.render().join("\n"), /Plan Mode Settings/);
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "write"]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 	assert.equal(mock.entries.length, 0);
 
 	tui.press("ctrl+c");
 	await settleWithin(running, "launch Settings close");
+});
+
+test("Plan tools setting applies immediately and rolls back when persistence fails", async () => {
+	for (const shouldFail of [false, true]) {
+		const agentDir = await mkdtemp(join(tmpdir(), "pi-plan-mode-visibility-settings-"));
+		const settingsPath = join(agentDir, "pi-plan-mode.json");
+		const mock = createMockPi({
+			activeTools: STABLE_TOOLS,
+			allTools: [builtinTool("read"), builtinTool("write"), extensionTool("custom")],
+		});
+		planMode(mock.pi, {
+			readSettings: () => readPlanModeSettings(settingsPath),
+			settingsPath,
+			...(shouldFail
+				? {
+						updateSettings: async () => {
+							throw new Error("mock persistence failure");
+						},
+					}
+				: {}),
+		});
+		const tui = createTuiHarness();
+		const context = createMockContext({ mode: "tui", hasUI: true, custom: tui.custom });
+		try {
+			await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
+			assert.deepEqual(mock.rawPi.getActiveTools(), STARTUP_TOOLS);
+
+			const running = mock.commands.get("plan")?.handler("", context.ctx) as Promise<unknown>;
+			await waitForOpenCount(tui, 1, running);
+			tui.press("tui.select.down");
+			tui.press("tui.select.down");
+			tui.press("tui.select.confirm");
+			await settleWithin(tui.waitForPending(), "the visibility Settings transition");
+			await waitForOpenCount(tui, 2, running);
+			for (let index = 0; index < 5; index += 1) tui.press("tui.select.down");
+			tui.press("tui.select.confirm");
+			await settleWithin(tui.waitForPending(), "the visibility Settings save");
+			await tui.waitForOpen();
+
+			if (shouldFail) {
+				assert.deepEqual(mock.rawPi.getActiveTools(), STARTUP_TOOLS);
+				assert.match(tui.render().join("\n"), /Plan tools\s+After first plan/);
+				assert.match(context.notifications.at(-1)?.message ?? "", /previous value remains/i);
+			} else {
+				assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
+				assert.match(tui.render().join("\n"), /Plan tools\s+Always/);
+				assert.equal(
+					(JSON.parse(await readFile(settingsPath, "utf8")) as { toolVisibility?: string })
+						.toolVisibility,
+					"always",
+				);
+			}
+			tui.press("ctrl+c");
+			await settleWithin(running, "the visibility Settings close");
+		} finally {
+			tui.dispose();
+			await rm(agentDir, { recursive: true, force: true });
+		}
+	}
+});
+
+test("busy Plan tools setting preserves runtime and persisted visibility", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-plan-mode-busy-visibility-"));
+	const settingsPath = join(agentDir, "pi-plan-mode.json");
+	await writeFile(settingsPath, '{"toolVisibility":"always"}\n');
+	const sessionManager = { getBranch: () => [], getEntries: () => [] };
+	const mock = createMockPi({
+		activeTools: STABLE_TOOLS,
+		allTools: [builtinTool("read"), builtinTool("write"), extensionTool("custom")],
+	});
+	mock.eventBus.on("workflow:mutex:v1", (payload: unknown) => {
+		const attempt = payload as { session?: unknown; group?: string; busy?: boolean };
+		if (attempt.session === sessionManager && attempt.group === "agent-workflow") {
+			attempt.busy = true;
+		}
+	});
+	planMode(mock.pi, { settingsPath, readSettings: () => readPlanModeSettings(settingsPath) });
+	const tui = createTuiHarness();
+	const context = createMockContext({
+		mode: "tui",
+		hasUI: true,
+		custom: tui.custom,
+		sessionManager,
+	});
+	try {
+		await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
+		const running = mock.commands.get("plan")?.handler("", context.ctx) as Promise<unknown>;
+		await waitForOpenCount(tui, 1, running);
+		tui.press("tui.select.down");
+		tui.press("tui.select.down");
+		tui.press("tui.select.confirm");
+		await settleWithin(tui.waitForPending(), "the busy Settings transition");
+		await waitForOpenCount(tui, 2, running);
+		for (let index = 0; index < 5; index += 1) tui.press("tui.select.down");
+		tui.press("tui.select.confirm");
+		await settleWithin(tui.waitForPending(), "the busy visibility rejection");
+		await tui.waitForOpen();
+
+		assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
+		assert.equal(
+			(JSON.parse(await readFile(settingsPath, "utf8")) as { toolVisibility?: string })
+				.toolVisibility,
+			"always",
+		);
+		assert.match(tui.render().join("\n"), /Plan tools\s+Always/);
+		assert.match(context.notifications.at(-1)?.message ?? "", /Another workflow is active/i);
+		tui.press("ctrl+c");
+		await settleWithin(running, "the busy Settings close");
+	} finally {
+		tui.dispose();
+		await rm(agentDir, { recursive: true, force: true });
+	}
 });
 
 test("persisted Settings become the baseline for the next Plan workflow", async () => {
@@ -160,7 +307,7 @@ test("persisted Settings become the baseline for the next Plan workflow", async 
 	try {
 		await writeFile(settingsPath, '{"thinkingLevel":"off"}\n');
 		const mock = createMockPi({
-			activeTools: ["read", "write"],
+			activeTools: STABLE_TOOLS,
 			allTools: [builtinTool("read"), builtinTool("write")],
 			thinkingLevel: "low",
 		});
@@ -189,7 +336,7 @@ test("the launch menu starts Plan mode only after explicit confirmation", async 
 	tui.press("tui.select.confirm");
 	await running;
 
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", ...REQUIRED_PLAN_TOOLS]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 	assert.equal(mock.sentUserMessages.length, 0);
 	assert.equal(context.statuses.get("plan-mode"), "plan active");
 });
@@ -198,13 +345,14 @@ test("launch tool choices remain draft-only until Done starts Plan mode", async 
 	const mock = launchFixture();
 	const tui = createTuiHarness();
 	const context = createMockContext({ mode: "tui", hasUI: true, custom: tui.custom });
+	await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
 
 	const running = mock.commands.get("plan")?.handler("", context.ctx) as Promise<unknown>;
 	await waitForOpenCount(tui, 1, running);
 	tui.press("tui.select.down");
 	tui.press("tui.select.confirm");
 	await waitForOpenCount(tui, 2);
-	assert.match(tui.render().join("\n"), /Choose Plan-mode tools/);
+	assert.match(tui.render().join("\n"), /Choose Plan policy allowlist/);
 	assert.equal(tui.isFocusable, true);
 	tui.setFocused(true);
 	assert.equal(tui.focused, true);
@@ -215,13 +363,13 @@ test("launch tool choices remain draft-only until Done starts Plan mode", async 
 	tui.press("tui.select.confirm");
 	await settleWithin(tui.waitForPending(), "the staged tool toggle");
 	await waitForOpenCount(tui, 3, running);
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "write"]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STARTUP_TOOLS);
 	assert.equal(mock.entries.length, 0);
 	tui.press("tui.select.down");
 	tui.press("tui.select.confirm");
 	await settleWithin(running, "launch menu completion");
 
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "custom", ...REQUIRED_PLAN_TOOLS]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 	assert.equal(mock.sentUserMessages.length, 0);
 });
 
@@ -229,6 +377,7 @@ test("launch tool drafts and help navigation cancel without side effects", async
 	const mock = launchFixture();
 	const tui = createTuiHarness();
 	const context = createMockContext({ mode: "tui", hasUI: true, custom: tui.custom });
+	await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
 
 	const running = mock.commands.get("plan")?.handler("", context.ctx) as Promise<unknown>;
 	await waitForOpenCount(tui, 1, running);
@@ -242,7 +391,7 @@ test("launch tool drafts and help navigation cancel without side effects", async
 	await waitForOpenCount(tui, 3, running);
 	tui.press("tui.select.cancel");
 	await waitForOpenCount(tui, 4, running);
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "write"]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STARTUP_TOOLS);
 	assert.equal(mock.entries.length, 0);
 
 	tui.press("tui.select.down");
@@ -255,7 +404,7 @@ test("launch tool drafts and help navigation cancel without side effects", async
 	tui.press("tui.select.cancel");
 	await running;
 
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "write"]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STARTUP_TOOLS);
 	assert.equal(mock.entries.length, 0);
 	assert.equal(mock.thinkingLevels.length, 0);
 	assert.equal(mock.sentUserMessages.length, 0);
@@ -271,12 +420,13 @@ test("inactive bare /plan adapts the launch menu to RPC", async () => {
 		input: rpc.ui.input,
 		custom: rpc.ui.custom,
 	});
+	await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
 
 	await mock.commands.get("plan")?.handler("", context.ctx);
 	rpc.assertConsumed();
 	assert.equal(
 		rpc.dialogs[0]?.title,
-		"Plan mode\nStatus: Off — normal tools are active.\nWhen started: read, plan_mode_question, plan_mode_complete",
+		"Plan mode\nStatus: Off — Plan helper tools load on the first Plan start.\nPlan policy will allow: read.",
 	);
 	assert.deepEqual(rpc.dialogs[0]?.options, [
 		"Start Plan mode",
@@ -284,7 +434,7 @@ test("inactive bare /plan adapts the launch menu to RPC", async () => {
 		"Settings",
 		"How Plan mode works",
 	]);
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", ...REQUIRED_PLAN_TOOLS]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 	assert.equal(mock.sentUserMessages.length, 0);
 });
 
@@ -293,7 +443,7 @@ test("RPC stages tool changes until the explicit start action", async () => {
 	const rpc = createRpcHarness([
 		{ kind: "select", response: "Choose tools, then start…" },
 		{ kind: "select", response: "[ ] custom" },
-		{ kind: "select", response: "Done — start Plan mode" },
+		{ kind: "select", response: "Done — start with this policy" },
 	]);
 	const context = createMockContext({
 		mode: "rpc",
@@ -302,10 +452,11 @@ test("RPC stages tool changes until the explicit start action", async () => {
 		input: rpc.ui.input,
 		custom: rpc.ui.custom,
 	});
+	await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
 
 	await mock.commands.get("plan")?.handler("", context.ctx);
 	rpc.assertConsumed();
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "custom", ...REQUIRED_PLAN_TOOLS]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 	assert.equal(mock.sentUserMessages.length, 0);
 });
 
@@ -324,7 +475,7 @@ test("Ctrl+C and external disposal discard the inactive launch interaction", asy
 		else tui.dispose();
 		await settleWithin(running, `${ending} launch cancellation`);
 
-		assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "write"]);
+		assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 		assert.equal(mock.entries.length, 0);
 		assert.equal(mock.thinkingLevels.length, 0);
 		assert.equal(mock.sentUserMessages.length, 0);
@@ -336,6 +487,7 @@ test("session replacement and shutdown discard staged launch tools", async () =>
 		const mock = launchFixture();
 		const tui = createTuiHarness();
 		const context = createMockContext({ mode: "tui", hasUI: true, custom: tui.custom });
+		await mock.events.get("session_start")?.[0]?.({ reason: "startup" }, context.ctx);
 		const running = mock.commands.get("plan")?.handler("", context.ctx) as Promise<unknown>;
 		await waitForOpenCount(tui, 1, running);
 		tui.press("tui.select.down");
@@ -352,7 +504,7 @@ test("session replacement and shutdown discard staged launch tools", async () =>
 		} else await mock.events.get("session_shutdown")?.[0]?.({}, context.ctx);
 		await settleWithin(running, `${ending} launch cancellation`);
 
-		assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "write"]);
+		assert.deepEqual(mock.rawPi.getActiveTools(), STARTUP_TOOLS);
 		assert.equal(mock.thinkingLevels.length, 0);
 		assert.equal(mock.sentUserMessages.length, 0);
 		const latest = mock.entries.at(-1)?.data as { selectedToolNames?: string[] } | undefined;
@@ -367,8 +519,8 @@ test("/plan tools reuses the pre-start draft and cancellation has no side effect
 		const context = createMockContext({ mode: "tui", hasUI: true, custom: tui.custom });
 		const running = mock.commands.get("plan")?.handler("tools", context.ctx) as Promise<unknown>;
 		await waitForOpenCount(tui, 1, running);
-		assert.match(tui.render().join("\n"), /Choose Plan-mode tools/);
-		assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "write"]);
+		assert.match(tui.render().join("\n"), /Choose Plan policy allowlist/);
+		assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 		assert.equal(mock.entries.length, 0);
 
 		if (ending === "cancel") tui.press("tui.select.cancel");
@@ -379,10 +531,7 @@ test("/plan tools reuses the pre-start draft and cancellation has no side effect
 		}
 		await settleWithin(running, `${ending} /plan tools completion`);
 
-		assert.deepEqual(
-			mock.rawPi.getActiveTools(),
-			ending === "done" ? ["read", ...REQUIRED_PLAN_TOOLS] : ["read", "write"],
-		);
+		assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 		assert.equal(context.statuses.get("plan-mode"), ending === "done" ? "plan active" : undefined);
 		assert.equal(mock.entries.length > 0, ending === "done");
 	}
@@ -390,7 +539,7 @@ test("/plan tools reuses the pre-start draft and cancellation has no side effect
 
 test("/plan tools compatibility shortcut stages directly in RPC", async () => {
 	const mock = launchFixture();
-	const rpc = createRpcHarness([{ kind: "select", response: "Done — start Plan mode" }]);
+	const rpc = createRpcHarness([{ kind: "select", response: "Done — start with this policy" }]);
 	const context = createMockContext({
 		mode: "rpc",
 		hasUI: true,
@@ -401,8 +550,8 @@ test("/plan tools compatibility shortcut stages directly in RPC", async () => {
 
 	await mock.commands.get("plan")?.handler("tools", context.ctx);
 	rpc.assertConsumed();
-	assert.match(rpc.dialogs[0]?.title ?? "", /Choose Plan-mode tools/);
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", ...REQUIRED_PLAN_TOOLS]);
+	assert.match(rpc.dialogs[0]?.title ?? "", /Choose Plan policy allowlist/);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 });
 
 test("active Plan mode locks Settings and /plan tools", async () => {
@@ -422,7 +571,7 @@ test("active Plan mode locks Settings and /plan tools", async () => {
 	await mock.commands.get("plan")?.handler("tools", context.ctx);
 
 	assert.match(context.notifications.at(-1)?.message ?? "", /before starting|locked/i);
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", ...REQUIRED_PLAN_TOOLS]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 	assert.equal(mock.entries.length, beforeEntries);
 });
 
@@ -434,7 +583,7 @@ test("/plan tools rejects non-interactive modes before changing state", async ()
 			mock.commands.get("plan")?.handler("tools", context.ctx) as Promise<unknown>,
 			/requires TUI or RPC|unavailable/i,
 		);
-		assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "write"]);
+		assert.deepEqual(mock.rawPi.getActiveTools(), STABLE_TOOLS);
 		assert.equal(mock.entries.length, 0);
 	}
 });
@@ -447,13 +596,13 @@ test("/plan start is deterministic and bare /plan rejects non-interactive modes"
 			rejected.commands.get("plan")?.handler("", rejectedContext.ctx) as Promise<unknown>,
 			/\/plan start.*\/plan <prompt>/i,
 		);
-		assert.deepEqual(rejected.rawPi.getActiveTools(), ["read", "write"]);
+		assert.deepEqual(rejected.rawPi.getActiveTools(), STABLE_TOOLS);
 		assert.equal(rejected.entries.length, 0);
 
 		const started = launchFixture();
 		const startedContext = createMockContext({ mode, hasUI: false });
 		await started.commands.get("plan")?.handler("start", startedContext.ctx);
-		assert.deepEqual(started.rawPi.getActiveTools(), ["read", ...REQUIRED_PLAN_TOOLS]);
+		assert.deepEqual(started.rawPi.getActiveTools(), STABLE_TOOLS);
 		assert.equal(started.sentUserMessages.length, 0);
 	}
 });

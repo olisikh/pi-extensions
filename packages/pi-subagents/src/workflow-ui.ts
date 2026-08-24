@@ -10,7 +10,7 @@ export async function showWorkflowPreview(
 ): Promise<boolean> {
 	const changes = workflowEffects(current, next);
 	return ctx.ui.confirm(
-		requiresReload ? "Save delegation change and reload?" : "Save delegation change?",
+		requiresReload ? "Save how subagents run and reload?" : "Save how subagents run?",
 		[
 			`Current: ${workflowLabel(current)}`,
 			`New: ${workflowLabel(next)}`,
@@ -28,13 +28,13 @@ export async function showWorkflowPreview(
 export function workflowLabel(value: DelegationWorkflow): string {
 	switch (value) {
 		case "all":
-			return "All delegation methods";
+			return "Background plus compatibility methods (async + sync)";
 		case "async-only":
-			return "Async only";
+			return "Keep Pi available (async)";
 		case "blocking-only":
-			return "Blocking only";
+			return "Compatibility blocking methods (sync)";
 		case "disabled":
-			return "Delegation disabled";
+			return "Subagents disabled";
 	}
 }
 
@@ -42,19 +42,27 @@ function workflowEffects(current: DelegationWorkflow, next: DelegationWorkflow):
 	const blockingEnabled = (value: DelegationWorkflow) =>
 		value === "all" || value === "blocking-only";
 	const asyncEnabled = (value: DelegationWorkflow) => value === "all" || value === "async-only";
+	const awaitEnabled = (value: DelegationWorkflow) => blockingEnabled(value) && asyncEnabled(value);
 	const effects: string[] = [];
 	if (blockingEnabled(current) !== blockingEnabled(next)) {
 		effects.push(
 			blockingEnabled(next)
-				? "Add blocking `subagent` and read-only `subagent_consult`"
-				: "Remove blocking `subagent` and read-only `subagent_consult`",
+				? "Allow deprecated blocking `subagent` and supported read-only `subagent_consult`"
+				: "Remove deprecated blocking `subagent` and supported read-only `subagent_consult`",
 		);
 	}
 	if (asyncEnabled(current) !== asyncEnabled(next)) {
 		effects.push(
 			asyncEnabled(next)
-				? "Add async `subagent_spawn`, `subagent_send`, `subagent_manage`, and `subagent_mailbox`"
-				: "Remove async `subagent_spawn`, `subagent_send`, `subagent_manage`, and `subagent_mailbox`",
+				? "Allow background tools: `subagent_spawn`, `subagent_send`, `subagent_manage`, and `subagent_mailbox`"
+				: "Remove background tools: `subagent_spawn`, `subagent_send`, `subagent_manage`, and `subagent_mailbox`",
+		);
+	}
+	if (awaitEnabled(current) !== awaitEnabled(next)) {
+		effects.push(
+			awaitEnabled(next)
+				? "Allow the blocking retained-agent join: `subagent_await`"
+				: "Remove the blocking retained-agent join: `subagent_await`",
 		);
 	}
 	return effects;

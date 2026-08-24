@@ -12,6 +12,13 @@ import {
 import type { ContentSearchMatch } from "./content-search.js";
 import { ContentSearchSession } from "./content-search-session.js";
 import {
+	safeTerminalText as escapeTerminalControls,
+	type ProjectBrowserItem,
+	ProjectFileBrowser,
+	parentProjectDirectory,
+} from "./file-browser.js";
+import { renderFileBrowser } from "./file-browser-ui.js";
+import {
 	createFileQuote,
 	createFileQuoteSnapshot,
 	type FileQuote,
@@ -49,6 +56,7 @@ interface FileQuoteExplorerOptions {
 	files: readonly string[];
 	cwd?: string;
 	loadFile: (path: string, signal?: AbortSignal) => Promise<LoadedProjectTextFile>;
+	editFile?: (path: string, signal?: AbortSignal) => Promise<void>;
 	gitContext?: GitContext;
 	rootNavigation?: boolean;
 	getSelectedContextState?: () => SelectedContextState;
@@ -57,12 +65,19 @@ interface FileQuoteExplorerOptions {
 	done: (result: FileQuoteExplorerResult | undefined) => void;
 }
 
+/**
+ * Keeps the explorer's coupled mode transitions and request generations in one controller so every
+ * cancellation path invalidates the same state instead of coordinating lifecycle across components.
+ */
 export class FileQuoteExplorer implements Component, Focusable {
 	private readonly search = new Input();
 	private readonly contentSearch: ContentSearchSession;
 	private readonly revisionInput = new Input();
 	private readonly fileSearch: ProjectFileSearch;
-	private filteredFiles: string[];
+	private readonly fileBrowser: ProjectFileBrowser;
+	private fileItems: ProjectBrowserItem[];
+	private currentDirectory = "";
+	private readonly directoryPositions = new Map<string, { index: number; offset: number }>();
 	private selectedFileIndex = 0;
 	private fileScrollOffset = 0;
 	private mode:
@@ -91,6 +106,8 @@ export class FileQuoteExplorer implements Component, Focusable {
 	private detailController: AbortController | undefined;
 	private openRequest = 0;
 	private openController: AbortController | undefined;
+	private editRequest = 0;
+	private editController: AbortController | undefined;
 	private loading = false;
 	private error: string | undefined;
 	private finished = false;
@@ -99,7 +116,8 @@ export class FileQuoteExplorer implements Component, Focusable {
 
 	constructor(private readonly options: FileQuoteExplorerOptions) {
 		this.fileSearch = new ProjectFileSearch(options.files);
-		this.filteredFiles = [...options.files];
+		this.fileBrowser = new ProjectFileBrowser(options.files);
+		this.fileItems = this.fileBrowser.list("");
 		this.contentSearch = new ContentSearchSession({
 			tui: options.tui,
 			theme: options.theme,
@@ -170,6 +188,7 @@ export class FileQuoteExplorer implements Component, Focusable {
 		this.contentSearch.dispose();
 		this.cancelOpenRequest();
 		this.cancelDetailRequest();
+		this.cancelEditRequest();
 		if (!this.finished) {
 			this.finished = true;
 			this.options.done(undefined);
@@ -184,53 +203,26 @@ export class FileQuoteExplorer implements Component, Focusable {
 		const repositoryLabel = project
 			? ` · ${escapeTerminalControls(project.branch)}@${project.head.slice(0, 12)}${project.dirty ? " · dirty" : ""}`
 			: "";
-		const title = this.options.theme.fg(
-			"accent",
-			this.options.theme.bold(`File Context · files${repositoryLabel}`),
-		);
 		const queryLabel = this.options.theme.fg("muted", "Search: ");
 		const queryWidth = Math.max(1, width - visibleWidth(queryLabel));
 		const searchLine = `${queryLabel}${this.search.render(queryWidth)[0] ?? ""}`;
-		const visibleFiles = this.filteredFiles.slice(
-			this.fileScrollOffset,
-			this.fileScrollOffset + listHeight,
-		);
-		const fileLines = visibleFiles.map((file, visibleIndex) => {
-			const index = this.fileScrollOffset + visibleIndex;
-			const prefix = index === this.selectedFileIndex ? "> " : "  ";
-			const status = this.options.gitContext?.statuses.get(file)?.code ?? "  ";
-			const line = `${prefix}${status} ${escapeTerminalControls(file)}`;
-			return truncateToWidth(
-				index === this.selectedFileIndex
-					? this.options.theme.bg("selectedBg", this.options.theme.fg("text", line))
-					: line,
-				width,
-				"",
-			);
-		});
-		if (fileLines.length === 0) {
-			fileLines.push(
-				truncateToWidth(this.options.theme.fg("muted", "  No matching files"), width, ""),
-			);
-		}
-		const state = this.loading
-			? this.options.theme.fg("warning", "Loading…")
-			: this.error
-				? this.options.theme.fg(
-						"error",
-						truncateToWidth(escapeTerminalControls(this.error), width, ""),
-					)
-				: this.options.theme.fg(
-						"muted",
-						`${this.filteredFiles.length} files · ↑↓ navigate · Enter preview · Tab reference · Ctrl+F contents · Esc cancel`,
-					);
 		return fitRows(
-			[
-				truncateToWidth(title, width, ""),
-				truncateToWidth(searchLine, width, ""),
-				...fileLines,
-				truncateToWidth(state, width, ""),
-			],
+			renderFileBrowser({
+				theme: this.options.theme,
+				keybindings: this.options.keybindings,
+				width,
+				height: listHeight,
+				items: this.fileItems,
+				selectedIndex: this.selectedFileIndex,
+				scrollOffset: this.fileScrollOffset,
+				currentDirectory: this.currentDirectory,
+				searchLine,
+				searchActive: this.isFileSearchActive(),
+				repositoryLabel,
+				statuses: this.options.gitContext?.statuses,
+				loading: this.loading,
+				error: this.error,
+			}),
 			availableRows,
 		);
 	}
@@ -245,6 +237,7 @@ export class FileQuoteExplorer implements Component, Focusable {
 		if (!this.loadedFile) return [this.options.theme.fg("warning", "Loading preview…")];
 		return renderFilePreview({
 			theme: this.options.theme,
+			keybindings: this.options.keybindings,
 			width,
 			availableRows,
 			file: this.loadedFile,
@@ -259,12 +252,19 @@ export class FileQuoteExplorer implements Component, Focusable {
 			error: this.error,
 			selectedContext: this.options.getSelectedContextState?.(),
 			canContinue: this.options.onAddAndContinue !== undefined,
+			canEdit: this.options.editFile !== undefined && this.loadedRevision === undefined,
 		});
 	}
 
 	private renderPreviewHelp(width: number): string[] {
 		const availableRows = Math.max(1, this.options.tui.terminal.rows - RESERVED_APP_ROWS);
-		return renderFilePreviewHelp(this.options.theme, width, availableRows);
+		return renderFilePreviewHelp(
+			this.options.theme,
+			this.options.keybindings,
+			width,
+			availableRows,
+			this.options.editFile !== undefined && this.loadedRevision === undefined,
+		);
 	}
 
 	private renderRevisionInput(width: number): string[] {
@@ -372,12 +372,16 @@ export class FileQuoteExplorer implements Component, Focusable {
 	}
 
 	private handleFileInput(data: string): void {
+		if (this.options.keybindings.matches(data, "tui.select.cancel")) {
+			this.cancelFileList();
+			return;
+		}
 		if (matchesKey(data, Key.ctrl("f"))) {
 			this.showContentSearch();
 			return;
 		}
 		if (matchesKey(data, Key.escape)) {
-			this.finish(this.rootExit("back"));
+			this.cancelFileList();
 			return;
 		}
 		if (this.loading) return;
@@ -387,7 +391,7 @@ export class FileQuoteExplorer implements Component, Focusable {
 		}
 		if (this.options.keybindings.matches(data, "tui.select.down")) {
 			this.selectedFileIndex = Math.min(
-				Math.max(0, this.filteredFiles.length - 1),
+				Math.max(0, this.fileItems.length - 1),
 				this.selectedFileIndex + 1,
 			);
 			return;
@@ -398,19 +402,31 @@ export class FileQuoteExplorer implements Component, Focusable {
 		}
 		if (this.options.keybindings.matches(data, "tui.select.pageDown")) {
 			this.selectedFileIndex = Math.min(
-				Math.max(0, this.filteredFiles.length - 1),
+				Math.max(0, this.fileItems.length - 1),
 				this.selectedFileIndex + 10,
 			);
 			return;
 		}
 		if (this.options.keybindings.matches(data, "tui.select.confirm")) {
-			const path = this.filteredFiles[this.selectedFileIndex];
-			if (path) void this.openFile(path);
+			this.openSelectedFileItem();
 			return;
 		}
 		if (this.options.keybindings.matches(data, "tui.input.tab")) {
-			const path = this.filteredFiles[this.selectedFileIndex];
-			if (path) this.finish({ kind: "reference", path });
+			const item = this.fileItems[this.selectedFileIndex];
+			if (item?.kind === "file") this.finish({ kind: "reference", path: item.path });
+			return;
+		}
+		if (
+			!this.isFileSearchActive() &&
+			this.currentDirectory &&
+			(matchesKey(data, Key.left) || matchesKey(data, Key.backspace))
+		) {
+			this.showParentDirectory();
+			return;
+		}
+		if (!this.isFileSearchActive() && matchesKey(data, Key.right)) {
+			const item = this.fileItems[this.selectedFileIndex];
+			if (item?.kind === "directory") this.showDirectory(item.path);
 			return;
 		}
 
@@ -418,7 +434,7 @@ export class FileQuoteExplorer implements Component, Focusable {
 		this.search.handleInput(data);
 		const query = this.search.getValue();
 		if (query !== previousQuery) {
-			this.filteredFiles = this.fileSearch.search(query);
+			this.refreshFileItems(query);
 			this.selectedFileIndex = 0;
 			this.fileScrollOffset = 0;
 			this.error = undefined;
@@ -435,6 +451,16 @@ export class FileQuoteExplorer implements Component, Focusable {
 		const loadedFile = this.loadedFile;
 		if (!loadedFile) return;
 		const lines = loadedFile.lines;
+		if (this.options.keybindings.matches(data, "app.editor.external")) {
+			if (this.loadedRevision) {
+				this.error = "Historical revisions are read-only; return to the worktree preview to edit";
+			} else if (this.options.editFile && !this.loading) {
+				void this.editCurrentFile();
+			} else if (!this.options.editFile) {
+				this.error = "External editing is unavailable";
+			}
+			return;
+		}
 		if (matchesKey(data, Key.escape)) {
 			this.returnToOrigin();
 			return;
@@ -631,6 +657,57 @@ export class FileQuoteExplorer implements Component, Focusable {
 		}
 	}
 
+	private async editCurrentFile(): Promise<void> {
+		const path = this.loadedFile?.path;
+		const editFile = this.options.editFile;
+		if (!path || !editFile || this.loadedRevision) return;
+		this.cancelOpenRequest();
+		this.cancelDetailRequest();
+		this.cancelEditRequest();
+		const request = this.editRequest;
+		const controller = new AbortController();
+		this.editController = controller;
+		this.loading = true;
+		this.error = undefined;
+		this.options.tui.requestRender();
+		try {
+			await editFile(path, controller.signal);
+			if (!this.isCurrentEditRequest(request, controller, path)) return;
+			const gitContext = this.options.gitContext;
+			const [loadedFile, loadedGit] = await Promise.all([
+				this.options.loadFile(path, controller.signal),
+				gitContext
+					? (gitContext.refreshFileContext?.(path, controller.signal) ??
+						gitContext.getFileContext(path, controller.signal))
+					: undefined,
+			]);
+			if (!this.isCurrentEditRequest(request, controller, path)) return;
+			const maximumIndex = Math.max(0, loadedFile.lines.length - 1);
+			this.loadedFile = loadedFile;
+			this.loadedGit = loadedGit;
+			this.previewCursor = Math.min(this.previewCursor, maximumIndex);
+			if (this.previewAnchor !== undefined) {
+				this.previewAnchor = Math.min(this.previewAnchor, maximumIndex);
+			}
+			this.previewScrollOffset = Math.min(this.previewScrollOffset, maximumIndex);
+			this.activeContentMatch = undefined;
+			this.hunkIndex = -1;
+			this.blame = undefined;
+			this.history = [];
+			this.error = undefined;
+		} catch (error: unknown) {
+			if (this.isCurrentEditRequest(request, controller, path) && !isAbortError(error)) {
+				this.error = formatError(error);
+			}
+		} finally {
+			if (request === this.editRequest && this.editController === controller) {
+				this.loading = false;
+				this.editController = undefined;
+			}
+			if (!this.finished && !this.disposed) this.options.tui.requestRender(true);
+		}
+	}
+
 	private async loadRevision(revision: string, historicalPath?: string): Promise<void> {
 		const path = this.loadedFile?.path;
 		const gitContext = this.options.gitContext;
@@ -810,6 +887,56 @@ export class FileQuoteExplorer implements Component, Focusable {
 		this.error = undefined;
 	}
 
+	private openSelectedFileItem(): void {
+		const item = this.fileItems[this.selectedFileIndex];
+		if (item?.kind === "directory") {
+			this.showDirectory(item.path);
+			return;
+		}
+		if (item?.kind === "file") void this.openFile(item.path);
+	}
+
+	private showDirectory(directory: string): void {
+		this.directoryPositions.set(this.currentDirectory, {
+			index: this.selectedFileIndex,
+			offset: this.fileScrollOffset,
+		});
+		this.currentDirectory = directory;
+		this.refreshFileItems("");
+		const position = this.directoryPositions.get(directory);
+		this.selectedFileIndex = Math.min(position?.index ?? 0, Math.max(0, this.fileItems.length - 1));
+		this.fileScrollOffset = Math.min(position?.offset ?? 0, this.selectedFileIndex);
+		this.error = undefined;
+	}
+
+	private showParentDirectory(): void {
+		this.cancelOpenRequest();
+		this.currentDirectory = parentProjectDirectory(this.currentDirectory);
+		this.refreshFileItems("");
+		const position = this.directoryPositions.get(this.currentDirectory);
+		this.selectedFileIndex = Math.min(position?.index ?? 0, Math.max(0, this.fileItems.length - 1));
+		this.fileScrollOffset = Math.min(position?.offset ?? 0, this.selectedFileIndex);
+		this.error = undefined;
+	}
+
+	private refreshFileItems(query: string): void {
+		this.fileItems = this.isFileSearchActive(query)
+			? this.fileBrowser.searchResults(this.fileSearch.search(query))
+			: this.fileBrowser.list(this.currentDirectory);
+	}
+
+	private isFileSearchActive(query = this.search.getValue()): boolean {
+		return escapeTerminalControls(query).trim().length > 0;
+	}
+
+	private cancelFileList(): void {
+		if (this.currentDirectory && !this.isFileSearchActive()) {
+			this.showParentDirectory();
+			return;
+		}
+		this.finish(this.rootExit("back"));
+	}
+
 	private cancelOpenRequest(): void {
 		this.openRequest += 1;
 		this.openController?.abort();
@@ -823,6 +950,23 @@ export class FileQuoteExplorer implements Component, Focusable {
 			!this.disposed &&
 			request === this.openRequest &&
 			this.openController === controller &&
+			!controller.signal.aborted
+		);
+	}
+
+	private isCurrentEditRequest(
+		request: number,
+		controller: AbortController,
+		path: string,
+	): boolean {
+		return (
+			!this.finished &&
+			!this.disposed &&
+			this.mode === "preview" &&
+			this.loadedRevision === undefined &&
+			this.loadedFile?.path === path &&
+			request === this.editRequest &&
+			this.editController === controller &&
 			!controller.signal.aborted
 		);
 	}
@@ -848,6 +992,13 @@ export class FileQuoteExplorer implements Component, Focusable {
 		this.detailRequest += 1;
 		this.detailController?.abort();
 		this.detailController = undefined;
+		this.loading = false;
+	}
+
+	private cancelEditRequest(): void {
+		this.editRequest += 1;
+		this.editController?.abort();
+		this.editController = undefined;
 		this.loading = false;
 	}
 
@@ -887,6 +1038,7 @@ export class FileQuoteExplorer implements Component, Focusable {
 	private returnToOrigin(): void {
 		this.cancelDetailRequest();
 		this.cancelOpenRequest();
+		this.cancelEditRequest();
 		this.mode = this.previewReturnMode;
 		this.loadedFile = undefined;
 		this.loadedGit = undefined;
@@ -903,6 +1055,7 @@ export class FileQuoteExplorer implements Component, Focusable {
 		this.contentSearch.dispose();
 		this.cancelOpenRequest();
 		this.cancelDetailRequest();
+		this.cancelEditRequest();
 		this.options.done(result);
 	}
 
@@ -923,19 +1076,6 @@ function fitRows(lines: string[], height: number): string[] {
 	if (lines.length <= height) return lines;
 	if (height <= 1) return lines.slice(0, 1);
 	return [...lines.slice(0, height - 1), lines.at(-1) ?? ""];
-}
-
-function escapeTerminalControls(text: string): string {
-	return [...text]
-		.map((character) => {
-			if (character === "\t") return "    ";
-			const code = character.charCodeAt(0);
-			if (code <= 31 || (code >= 127 && code <= 159)) {
-				return `\\x${code.toString(16).padStart(2, "0")}`;
-			}
-			return character;
-		})
-		.join("");
 }
 
 function formatHistoryDate(authorTime: number): string {

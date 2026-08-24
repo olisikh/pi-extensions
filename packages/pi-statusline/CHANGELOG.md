@@ -1,5 +1,27 @@
 # @narumitw/pi-statusline
 
+## 0.49.13
+
+### Patch Changes
+
+- 3346683: Publish generated lazy chunks at the JavaScript paths referenced by each extension runtime so deferred menus and implementations load correctly through Pi's Jiti loader.
+- Updated dependencies [b9eba3a]
+  - @narumitw/pi-tui-kit@0.58.0
+
+## 0.49.12
+
+### Patch Changes
+
+- Updated dependencies [6574232]
+- Updated dependencies [cddc265]
+  - @narumitw/pi-tui-kit@0.57.0
+
+## 0.49.11
+
+### Patch Changes
+
+- e7ae16e: Load the extension from a generated split TypeScript runtime to reduce Jiti package startup work while preserving the lazy command boundary.
+
 ## 0.49.10
 
 ### Patch Changes

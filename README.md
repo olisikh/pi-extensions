@@ -33,6 +33,21 @@ pi -e npm:@narumitw/pi-goal \
 > [!IMPORTANT]
 > Pi extensions run with your full user permissions. Review an extension before installing it from any third party.
 
+## ⭐ Extensions I use every day
+
+These extensions are part of my daily Pi setup:
+
+| Extension | Why I use it |
+| --- | --- |
+| [`pi-btw`](./packages/pi-btw) | Ask a quick side question without polluting the main context. |
+| [`pi-accounts`](./packages/pi-accounts) | Switch between my multiple Codex accounts. |
+| [`pi-caffeinate`](./packages/pi-caffeinate) | Keep my machine awake so Pi can keep working. |
+| [`pi-codex-compact`](./packages/pi-codex-compact) | Spend a little more for better compaction quality. |
+| [`pi-stamp`](./packages/pi-stamp) | See useful details for each response, such as its timestamp. |
+| [`pi-starship`](./packages/pi-starship) | Match Pi's footer to my Starship shell setup. |
+| [`pi-sync`](./packages/pi-sync) | Sync my Pi configuration across all my devices through S3. |
+| [`pi-usage`](./packages/pi-usage) | Check my Codex usage and limit reset times without opening Codex. |
+
 ## 📦 Choose an extension
 
 ### Coding and delegation
@@ -40,6 +55,7 @@ pi -e npm:@narumitw/pi-goal \
 | Package | Use it for | Install |
 | --- | --- | --- |
 | [`pi-codex-compact`](./packages/pi-codex-compact) | Use OpenAI Codex Remote Compaction V2 to persist and replay bounded opaque checkpoints, with `/codex-compact` manual controls and safe Pi-native fallback. | `pi install npm:@narumitw/pi-codex-compact` |
+| [`pi-file-context`](./packages/pi-file-context) | Browse project files, preview text, select exact lines or Git diff hunks, and attach immutable snapshots with Git provenance to the next prompt. Open it with configurable `Ctrl+Shift+X` or `/file-context`. | `pi install npm:@narumitw/pi-file-context` |
 | [`pi-lsp`](./packages/pi-lsp) | Language-server diagnostics and code actions across JavaScript, TypeScript, Python, Rust, Go, Ruby, C/C++, JVM, .NET, Swift, shell, infrastructure formats, and more. | `pi install npm:@narumitw/pi-lsp` |
 | [`pi-plan-mode`](./packages/pi-plan-mode) | Codex-like, read-only `/plan` collaboration before implementation begins. | `pi install npm:@narumitw/pi-plan-mode` |
 | [`pi-subagents`](./packages/pi-subagents) | Delegate isolated work in single, parallel, or chained execution modes. | `pi install npm:@narumitw/pi-subagents` |
@@ -59,6 +75,9 @@ pi -e npm:@narumitw/pi-goal \
 | [`pi-caffeinate`](./packages/pi-caffeinate) | Prevent system sleep while Pi processes a long-running prompt. | `pi install npm:@narumitw/pi-caffeinate` |
 | [`pi-goal`](./packages/pi-goal) | Keep the agent working until a goal is verified complete; optionally enable an experimental ordered queue. | `pi install npm:@narumitw/pi-goal` |
 | [`pi-worktree`](./packages/pi-worktree) | Create, switch, remove, and prune Git worktrees while carrying the Pi session into another workspace. | `pi install npm:@narumitw/pi-worktree` |
+
+Current Plan and Goal releases can coexist on the characterized Pi runtime through their anonymous cooperative workflow mutex.
+The deprecated combined `pi-workflow` package has no atomic Plan-to-Goal replacement; follow its [archived migration instructions](./deprecated/pi-workflow/README.md#-migration-from-pi-workflow).
 
 ### Accounts and data
 
@@ -100,10 +119,8 @@ commands, settings persistence, confirmations, and specialized UI.
 | --- | --- | --- |
 | [`pi-analytics`](./packages/pi-analytics) | Review private, content-free local metrics for model calls, skills, tools, response cycles, and observed provider reliability through `/analytics`. | `pi install npm:@narumitw/pi-analytics` |
 | [`pi-chat`](./packages/pi-chat) | Join ephemeral peer-to-peer chat rooms that stay separate from Pi sessions, prompts, and model context. | `pi install npm:@narumitw/pi-chat` |
-| [`pi-file-context`](./packages/pi-file-context) | Browse project files, preview text, select exact lines or Git diff hunks, and attach immutable snapshots with Git provenance to the next prompt. Open it with configurable `F8` or `/file-context`. | `pi install npm:@narumitw/pi-file-context` |
 | [`pi-fleet`](./packages/pi-fleet) | Start a separate Pi process in a Ghostty split and connect explicit local Pi sessions for bounded messages and one-turn requests. | `pi install npm:@narumitw/pi-fleet` |
 | [`pi-recall`](./packages/pi-recall) | Save selected text messages locally and preview or quote them across Pi sessions. | `pi install npm:@narumitw/pi-recall` |
-| [`pi-workflow`](./packages/pi-workflow) | Combine `/plan` and `/goal` in one experimental package with an integrated, recoverable Plan-to-Goal handoff. | `pi install npm:@narumitw/pi-workflow` |
 
 ## 🔧 Advanced installation
 
@@ -156,14 +173,16 @@ npm run check
 
 `npm test` typechecks the test sources and runs the root and workspace suites with Vitest.
 
-Use the generic Just recipes with an unscoped extension name:
+Build generated entries before loading local packages, and use the generic Just pack recipe with an unscoped package name:
 
 ```bash
-just try goal
+npm --workspace @narumitw/pi-goal run build --if-present
+pi -e ./packages/pi-goal
 just pack goal
 
-# Experimental packages use the same recipes
-just try file-context
+# Another build-backed package uses the same local flow and pack recipe
+npm --workspace @narumitw/pi-file-context run build --if-present
+pi -e ./packages/pi-file-context
 just pack file-context
 
 # Libraries use the same generic pack recipe
@@ -219,9 +238,10 @@ scripts/                 Shared checks, tests, versioning, and release helpers
 test/                    Root integration and repository tests
 ```
 
-Each active package contains its own `package.json`, `README.md`, `LICENSE`, `tsconfig.json`, and
-TypeScript source under `src/`. Extension `src/index.ts` files are thin Pi entrypoints and declare a
-stable or experimental lifecycle; reusable libraries publish built ESM and declarations from `dist/`.
+Each active package contains its own `package.json`, `README.md`, `LICENSE`, `tsconfig.json`, and TypeScript source under `src/`.
+Every extension keeps a thin `src/index.ts` source forwarder and declares a stable or experimental lifecycle.
+An extension package may load that source entrypoint directly or publish a build-backed `dist/index.ts` bundle for Pi's Jiti runtime.
+Reusable libraries publish built ESM and declarations from `dist/`.
 
 <details>
 <summary>Deprecated packages</summary>
@@ -234,6 +254,7 @@ The following packages remain available as source references but are excluded fr
 - `pi-retry` — replaced by Pi's built-in provider retry and timeout behavior
 - `pi-google-genai` — replaced by the `grounding-with-google-genai` agent skill
 - `pi-image-drop` — deprecated without a replacement
+- [`pi-workflow`](./deprecated/pi-workflow) — replaced by focused Plan and Goal products; atomic Plan-to-Goal handoff has [no replacement](./deprecated/pi-workflow/README.md#-migration-from-pi-workflow)
 - `pi-jupyter` — deprecated without a replacement
 - `pi-webui` — deprecated without a replacement
 - `pi-auto-thinking`

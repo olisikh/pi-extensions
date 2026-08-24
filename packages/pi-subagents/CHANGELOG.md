@@ -1,5 +1,40 @@
 # @narumitw/pi-subagents
 
+## 2.0.6
+
+### Patch Changes
+
+- Updated dependencies [6574232]
+- Updated dependencies [cddc265]
+  - @narumitw/pi-tui-kit@0.57.0
+
+## 2.0.5
+
+### Patch Changes
+
+- e7c41f1: Include the generated child peer bridge in the published runtime so retained subprocess and RPC agents can launch from npm installs.
+
+## 2.0.4
+
+### Patch Changes
+
+- 0ffd80d: Preserve accurate cumulative RPC usage telemetry during streaming, interruption, and timeout finalization.
+- Updated dependencies [f47364f]
+  - @narumitw/pi-tui-kit@0.56.1
+
+## 2.0.3
+
+### Patch Changes
+
+- 806eada: Reduce extension startup time by letting generated TypeScript chunks reference their emitted `.ts` files directly.
+
+## 2.0.2
+
+### Patch Changes
+
+- 1fa501f: Reduce idle startup work by separating Pi registration and read-only settings modules from backward-compatible utility exports and settings mutations.
+- 9224800: Load the extension from a generated split TypeScript runtime to reduce Jiti startup work while preserving existing first-use boundaries.
+
 ## 2.0.1
 
 ### Patch Changes

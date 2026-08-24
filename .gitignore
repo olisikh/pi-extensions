@@ -202,5 +202,8 @@ vite.config.ts.timestamp-*
 
 # Project
 .pi/agent/
+.pi/skills/
+**/.pi-*-build-test-*/
+**/.pi-*-dist-*/
 docs/plans/archived/
 docs/roadmaps/archived/

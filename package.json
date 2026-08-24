@@ -14,6 +14,7 @@
 			"./packages/pi-caffeinate/src/index.ts",
 			"./packages/pi-chrome-devtools/src/index.ts",
 			"./packages/pi-codex-compact/src/index.ts",
+			"./packages/pi-file-context/src/index.ts",
 			"./packages/pi-firecrawl/src/index.ts",
 			"./packages/pi-github-pr/src/index.ts",
 			"./packages/pi-goal/src/index.ts",
@@ -25,6 +26,7 @@
 			"./packages/pi-statusline/src/index.ts",
 			"./packages/pi-subagents/src/index.ts",
 			"./packages/pi-sync/src/index.ts",
+			"./packages/pi-todo/src/index.ts",
 			"./packages/pi-tool/src/index.ts",
 			"./packages/pi-usage/src/index.ts",
 			"./packages/pi-worktree/src/index.ts"
@@ -70,19 +72,19 @@
 		"pack:worktree": "npm --workspace @narumitw/pi-worktree pack --dry-run"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^2.5.8",
-		"@changesets/cli": "3.0.0",
-		"@earendil-works/pi-agent-core": "0.84.2",
-		"@earendil-works/pi-ai": "0.84.2",
-		"@earendil-works/pi-coding-agent": "0.84.2",
-		"@earendil-works/pi-tui": "0.84.2",
+		"@biomejs/biome": "^2.5.10",
+		"@changesets/cli": "3.0.1",
+		"@earendil-works/pi-agent-core": "0.84.3",
+		"@earendil-works/pi-ai": "0.84.3",
+		"@earendil-works/pi-coding-agent": "0.84.3",
+		"@earendil-works/pi-tui": "0.84.3",
 		"@types/node": "^26.2.0",
 		"concurrently": "^10.0.5",
 		"husky": "9.1.7",
-		"npm-check-updates": "23.0.2",
-		"typebox": "^1.3.14",
+		"npm-check-updates": "23.1.0",
+		"typebox": "^1.3.18",
 		"typescript": "^7.0.2",
-		"vitest": "^4.1.10"
+		"vitest": "^4.1.11"
 	},
 	"overrides": {
 		"brace-expansion": "5.0.9",
@@ -90,7 +92,7 @@
 		"protobufjs": "7.6.5"
 	},
 	"allowScripts": {
-		"esbuild@0.28.1": true,
+		"esbuild@0.28.2": true,
 		"@google/genai": false,
 		"protobufjs": false
 	}

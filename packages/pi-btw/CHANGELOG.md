@@ -1,5 +1,32 @@
 # @narumitw/pi-btw
 
+## 0.55.2
+
+### Patch Changes
+
+- Updated dependencies [b9eba3a]
+  - @narumitw/pi-tui-kit@0.58.0
+
+## 0.55.1
+
+### Patch Changes
+
+- Updated dependencies [6574232]
+- Updated dependencies [cddc265]
+  - @narumitw/pi-tui-kit@0.57.0
+
+## 0.55.0
+
+### Minor Changes
+
+- 79bc155: Add themed fullscreen transcript search and verified host clipboard feedback for mouse selections.
+
+## 0.54.2
+
+### Patch Changes
+
+- 30bc076: Load each extension from a generated TypeScript runtime to reduce Jiti package startup work while preserving existing first-use boundaries.
+
 ## 0.54.1
 
 ### Patch Changes

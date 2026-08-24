@@ -4,7 +4,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default:
     @just --list
 
-# Run the CI-equivalent verification gate
+# Run build, formatting, boundary, and type checks
 check:
     npm run check
 
@@ -30,6 +30,7 @@ verify-update:
     # Rebuild generated web assets only in workspaces that provide build:web
     npm --workspaces --if-present run build:web
     npm run check
+    npm test
     npm pack --workspaces --dry-run
 
 # Update, clean-install, rebuild, test, and pack all npm workspaces
@@ -73,12 +74,6 @@ _validate-package-name name:
 pack name: (_validate-package-name name)
     npm --workspace {{ quote("@narumitw/pi-" + name) }} pack --dry-run
 
-# Try an extension package from this working tree as a temporary pi package
-# Usage: just try subagents
-try name: (_validate-package-name name)
-    npm --workspace {{ quote("@narumitw/pi-" + name) }} run build --if-present
-    pi -e {{ quote("./packages/pi-" + name) }}
-
 # Open the private Pi TUI Kit showcase extension from this working tree
 showcase-tui-kit:
     npm --workspace @narumitw/pi-tui-kit run build
@@ -96,35 +91,13 @@ benchmark-subagents samples="7":
 benchmark-codex-compact *args:
     node packages/pi-codex-compact/benchmark/run.mjs {{ args }}
 
-# Install dependencies, build the shared TUI library, and start every local extension package
+# Install dependencies, build local package artifacts, and start every local extension package
 # pi-statusline and pi-tui-kit are intentionally excluded from Pi extension loading
 # PI_TIMING reports startup timing and PI_CODING_AGENT_DIR isolates local development state
 dev:
     npm install
-    npm --workspace @narumitw/pi-tui-kit run build
-    PI_TIMING=1 PI_CODING_AGENT_DIR=./.pi/agent pi \
-        -e ./packages/pi-accounts \
-        -e ./packages/pi-analytics \
-        -e ./packages/pi-btw \
-        -e ./packages/pi-caffeinate \
-        -e ./packages/pi-chat \
-        -e ./packages/pi-chrome-devtools \
-        -e ./packages/pi-codex-compact \
-        -e ./packages/pi-file-context \
-        -e ./packages/pi-firecrawl \
-        -e ./packages/pi-fleet \
-        -e ./packages/pi-github-pr \
-        -e ./packages/pi-langfuse \
-        -e ./packages/pi-lsp \
-        -e ./packages/pi-recall \
-        -e ./packages/pi-stamp \
-        -e ./packages/pi-starship \
-        -e ./packages/pi-subagents \
-        -e ./packages/pi-sync \
-        -e ./packages/pi-tool \
-        -e ./packages/pi-usage \
-        -e ./packages/pi-workflow \
-        -e ./packages/pi-worktree
+    npm run build
+    PI_TIMING=1 PI_CODING_AGENT_DIR=.pi/agent pi
 
 # Install a package through pi, falling back to the local workspace if unpublished
 # Usage: just install subagents

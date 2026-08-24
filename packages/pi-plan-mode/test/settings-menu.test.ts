@@ -52,17 +52,18 @@ function menuOptions(
 	};
 }
 
-test("Plan settings show five flat workflow rows without materializing a missing file", async () => {
+test("Plan settings show six flat workflow rows without materializing a missing file", async () => {
 	await withSettingsMenu(async ({ settingsPath, tui, ctx, saved }) => {
 		const running = showPlanModeSettings(ctx, menuOptions(settingsPath, saved));
 		await tui.waitForOpen();
 		const frame = tui.render().join("\n");
 		assert.match(frame, /Plan Mode Settings/);
 		assert.match(frame, /Plan thinking\s+inherit/);
-		assert.match(frame, /Plan tools\s+Automatic safe built-ins/);
-		assert.match(frame, /After Implement\s+Keep plan active/);
+		assert.match(frame, /Plan policy tools\s+Automatic safe built-ins/);
+		assert.match(frame, /Plan reinjection\s+Off — conversation history only/);
 		assert.match(frame, /Export destination\s+PLAN\.md/);
 		assert.match(frame, /Plan mode shortcut\s+none/);
+		assert.match(frame, /Plan tools\s+After first plan/);
 		assert.ok(tui.render(34).every((line) => visibleWidth(line) <= 34));
 		await assert.rejects(access(settingsPath));
 
@@ -92,6 +93,27 @@ test("Plan settings save thinking immediately for the next workflow", async () =
 	});
 });
 
+test("Plan helper visibility saves immediately", async () => {
+	await withSettingsMenu(async ({ settingsPath, tui, ctx, saved }) => {
+		const running = showPlanModeSettings(ctx, menuOptions(settingsPath, saved));
+		await tui.waitForOpen();
+		for (let index = 0; index < 5; index += 1) tui.press("tui.select.down");
+		tui.press("tui.select.confirm");
+		await tui.waitForPending();
+		await tui.waitForOpen();
+
+		assert.equal(saved.at(-1)?.toolVisibility, "always");
+		assert.equal(
+			(JSON.parse(await readFile(settingsPath, "utf8")) as { toolVisibility?: string })
+				.toolVisibility,
+			"always",
+		);
+		assert.match(tui.render().join("\n"), /Plan tools\s+Always/);
+		tui.press("ctrl+c");
+		await running;
+	});
+});
+
 test("Default tools distinguish automatic, explicit empty, user risk, blocked rows, and reset", async () => {
 	await withSettingsMenu(async ({ settingsPath, tui, ctx, saved }) => {
 		const running = showPlanModeSettings(ctx, menuOptions(settingsPath, saved));
@@ -101,7 +123,7 @@ test("Default tools distinguish automatic, explicit empty, user risk, blocked ro
 		await tui.waitForPending();
 		await tui.waitForOpen();
 		let frame = tui.render().join("\n");
-		assert.match(frame, /Default Plan-mode tools/);
+		assert.match(frame, /Default Plan policy allowlist/);
 		assert.match(frame, /user risk/i);
 		assert.match(frame, /Use automatic safe built-ins/);
 		tui.press("tui.select.down");
@@ -121,7 +143,7 @@ test("Default tools distinguish automatic, explicit empty, user risk, blocked ro
 		tui.press("tui.select.cancel");
 		await tui.waitForPending();
 		await tui.waitForOpen();
-		assert.match(tui.render().join("\n"), /Plan tools\s+Required tools only/);
+		assert.match(tui.render().join("\n"), /Plan policy tools\s+No optional tools/);
 
 		// Reopen and choose the pinned reset action after the three tool rows.
 		tui.press("tui.select.confirm");
@@ -166,7 +188,7 @@ test("Default tools retain configured names that are unavailable in the current 
 	});
 });
 
-test("After Implement cycles outcomes and export destination saves, previews, resets, and cancels", async () => {
+test("Plan reinjection cycles outcomes and export destination saves, previews, resets, and cancels", async () => {
 	await withSettingsMenu(async ({ settingsPath, tui, ctx, saved }) => {
 		const running = showPlanModeSettings(ctx, menuOptions(settingsPath, saved));
 		await tui.waitForOpen();
@@ -175,8 +197,8 @@ test("After Implement cycles outcomes and export destination saves, previews, re
 		tui.press("tui.select.confirm");
 		await tui.waitForPending();
 		await tui.waitForOpen();
-		assert.equal(saved.at(-1)?.implementationPlanRetention, "clear-on-start");
-		assert.match(tui.render().join("\n"), /After Implement\s+Use plan for handoff only/);
+		assert.equal(saved.at(-1)?.implementationPlanRetention, "clear-after-first-run");
+		assert.match(tui.render().join("\n"), /Plan reinjection\s+Through first implementation run/);
 
 		tui.press("tui.select.down");
 		tui.press("tui.select.confirm");
@@ -337,22 +359,24 @@ test("RPC Settings changes retention and export destination with the same flat n
 				kind: "select",
 				options: [
 					"Plan thinking (inherit)",
-					"Plan tools (Automatic safe built-ins)",
-					"After Implement (Keep plan active)",
+					"Plan policy tools (Automatic safe built-ins)",
+					"Plan reinjection (Off — conversation history only)",
 					"Export destination (PLAN.md)",
 					"Plan mode shortcut (none)",
+					"Plan tools (After first plan)",
 					"Back",
 				],
-				response: "After Implement (Keep plan active)",
+				response: "Plan reinjection (Off — conversation history only)",
 			},
 			{
 				kind: "select",
 				options: [
 					"Plan thinking (inherit)",
-					"Plan tools (Automatic safe built-ins)",
-					"After Implement (Use plan for handoff only)",
+					"Plan policy tools (Automatic safe built-ins)",
+					"Plan reinjection (Through first implementation run)",
 					"Export destination (PLAN.md)",
 					"Plan mode shortcut (none)",
+					"Plan tools (After first plan)",
 					"Back",
 				],
 				response: "Export destination (PLAN.md)",
@@ -366,10 +390,11 @@ test("RPC Settings changes retention and export destination with the same flat n
 				kind: "select",
 				options: [
 					"Plan thinking (inherit)",
-					"Plan tools (Automatic safe built-ins)",
-					"After Implement (Use plan for handoff only)",
+					"Plan policy tools (Automatic safe built-ins)",
+					"Plan reinjection (Through first implementation run)",
 					"Export destination (rpc/PLAN.md)",
 					"Plan mode shortcut (none)",
+					"Plan tools (After first plan)",
 					"Back",
 				],
 				response: undefined,
@@ -379,7 +404,7 @@ test("RPC Settings changes retention and export destination with the same flat n
 		const saved: PlanModeSettings[] = [];
 		await showPlanModeSettings(context.ctx, menuOptions(settingsPath, saved));
 		rpc.assertConsumed();
-		assert.equal(saved.at(-1)?.implementationPlanRetention, "clear-on-start");
+		assert.equal(saved.at(-1)?.implementationPlanRetention, "clear-after-first-run");
 		assert.equal(saved.at(-1)?.defaultPlanExportPath, "rpc/PLAN.md");
 	} finally {
 		await rm(directory, { recursive: true, force: true });
@@ -392,10 +417,11 @@ test("Plan settings adapt to RPC cancellation and disposal aborts an in-flight s
 			kind: "select",
 			options: [
 				"Plan thinking (inherit)",
-				"Plan tools (Automatic safe built-ins)",
-				"After Implement (Keep plan active)",
+				"Plan policy tools (Automatic safe built-ins)",
+				"Plan reinjection (Off — conversation history only)",
 				"Export destination (PLAN.md)",
 				"Plan mode shortcut (none)",
+				"Plan tools (After first plan)",
 				"Back",
 			],
 			response: undefined,

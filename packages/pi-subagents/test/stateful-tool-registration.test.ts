@@ -28,7 +28,7 @@ test("stateful tools are available by default, disable cleanly, and expose the l
 		assert.equal(await controller.clearAgents(), 0);
 		assert.deepEqual(
 			mock.tools.map((tool) => tool.name),
-			["subagent_spawn", "subagent_send", "subagent_manage", "subagent_mailbox"],
+			["subagent_spawn", "subagent_send", "subagent_await", "subagent_manage", "subagent_mailbox"],
 		);
 		assert.equal(
 			mock.tools.some((tool) =>
@@ -73,6 +73,9 @@ test("stateful tools are available by default, disable cleanly, and expose the l
 			.at(-1) as typeof spawn | undefined;
 		assert.match(autoResumeRegistration?.description ?? "", /api-reviewer/);
 		assert.match(autoResumeRegistration?.promptGuidelines?.join("\n") ?? "", /auto-resume/);
+		for (const guideline of autoResumeRegistration?.promptGuidelines ?? []) {
+			assert.match(guideline, /subagent_spawn/);
+		}
 		controller.setAgentCatalog("Available agent definitions\n- worker [source: built-in]");
 		const refreshedRegistration = mock.tools
 			.filter((tool) => tool.name === "subagent_spawn")
@@ -85,7 +88,12 @@ test("stateful tools are available by default, disable cleanly, and expose the l
 		assert.match(spawn.parameters.properties?.timeoutMs?.description ?? "", /work deadline/i);
 		assert.match(spawn.parameters.properties?.idleTimeoutMs?.description ?? "", /completed/i);
 		assert.match(spawn.parameters.properties?.maxTurns?.description ?? "", /assistant turns/i);
+		assert.match(spawn.parameters.properties?.maxTurns?.description ?? "", /omit.*tight bound/i);
 		assert.match(spawn.parameters.properties?.maxToolCalls?.description ?? "", /tool calls/i);
+		assert.match(
+			spawn.parameters.properties?.maxToolCalls?.description ?? "",
+			/omit.*tight bound/i,
+		);
 		assert.match(
 			spawn.parameters.properties?.allowConcurrentWrites?.description ?? "",
 			/deprecated compatibility field.*allowed by default/i,
@@ -120,6 +128,25 @@ test("stateful tools are available by default, disable cleanly, and expose the l
 			send.parameters.properties?.allowConcurrentWrites?.description ?? "",
 			/deprecated compatibility field.*allowed by default/i,
 		);
+		const awaitTool = mock.tools.find((tool) => tool.name === "subagent_await") as {
+			description: string;
+			promptGuidelines?: string[];
+			parameters: {
+				required?: string[];
+				properties?: Record<string, { description?: string; maximum?: number; minimum?: number }>;
+			};
+		};
+		assert.match(awaitTool.description, /blocks Pi.*queued steering/i);
+		assert.match(awaitTool.description, /timeout.*never interrupts or closes/i);
+		assert.deepEqual(awaitTool.parameters.required, ["agentId"]);
+		assert.equal(awaitTool.parameters.properties?.timeoutMs?.minimum, 1);
+		assert.equal(awaitTool.parameters.properties?.timeoutMs?.maximum, 2_147_483_647);
+		assert.match(
+			awaitTool.parameters.properties?.timeoutMs?.description ?? "",
+			/defaults to 30000/i,
+		);
+		assert.match(awaitTool.promptGuidelines?.join("\n") ?? "", /required.*blocking.*intentional/i);
+		assert.match(awaitTool.promptGuidelines?.join("\n") ?? "", /do not repeatedly call/i);
 		const manage = mock.tools.find((tool) => tool.name === "subagent_manage") as {
 			description: string;
 			parameters: { properties?: Record<string, { description?: string; enum?: string[] }> };
@@ -333,7 +360,15 @@ test("stateful tools are available by default, disable cleanly, and expose the l
 			description: string;
 			execute: (...args: unknown[]) => Promise<unknown>;
 			parameters: {
-				properties?: Record<string, { description?: string; enum?: string[]; maxLength?: number }>;
+				properties?: Record<
+					string,
+					{
+						description?: string;
+						enum?: string[];
+						maxLength?: number;
+						properties?: Record<string, unknown>;
+					}
+				>;
 			};
 			promptGuidelines: string[];
 		};
@@ -346,6 +381,10 @@ test("stateful tools are available by default, disable cleanly, and expose the l
 			"structured-v2",
 		]);
 		assert.ok(spawnTool.parameters.properties?.contract);
+		const contractSchema = JSON.stringify(spawnTool.parameters.properties?.contract);
+		assert.match(contractSchema, /ordinary delegation.*omit/i);
+		assert.match(contractSchema, /readPaths.*writePaths.*network.*secrets.*unsupported/i);
+		assert.match(contractSchema, /enforcement.*enforce.*reject/i);
 		assert.match(
 			spawnTool.parameters.properties?.thinkingLevel?.description ?? "",
 			/task difficulty/i,
@@ -370,9 +409,13 @@ test("stateful tools are available by default, disable cleanly, and expose the l
 		assert.doesNotMatch(spawnGuidance, /broad asynchronous research or review/i);
 		assert.match(spawnGuidance, /next-turn.*default/i);
 		assert.match(spawnGuidance, /current response.*does not depend/i);
-		assert.match(spawnGuidance, /blocking subagent.*final answer.*depends/i);
+		assert.match(spawnGuidance, /subagent_await.*overlap.*complete/i);
+		assert.match(spawnGuidance, /deprecated subagent/i);
 		assert.doesNotMatch(spawnGuidance, /even when.*final answer.*depends/i);
-		assert.match(spawnGuidance, /do not.*blocking parallel.*same turn/i);
+		assert.match(
+			spawnGuidance,
+			/existing caller.*explicit user request.*chain.*fan-in.*panel.*workflow/i,
+		);
 		assert.match(
 			spawnGuidance,
 			/single subagent_spawn.*bounded.*clear ownership.*beside.*main-agent work/i,
@@ -386,6 +429,10 @@ test("stateful tools are available by default, disable cleanly, and expose the l
 			/use one blocking subagent parallel call for multiple independent one-shot tasks/i,
 		);
 		assert.match(spawnGuidance, /immediately continue.*identified.*local task/i);
+		assert.match(
+			spawnGuidance,
+			/local work.*exhausted.*at most one brief progress sentence.*end the turn.*do not repeat.*requested final format.*verdict/i,
+		);
 		assert.match(spawnGuidance, /do not merely announce.*wait.*poll.*end/i);
 		assert.doesNotMatch(spawnGuidance, /tell the user.*end the response/i);
 		assert.match(spawnGuidance, /do not poll.*subagent_inspect/i);
@@ -393,6 +440,19 @@ test("stateful tools are available by default, disable cleanly, and expose the l
 		assert.doesNotMatch(spawnGuidance, /subagent_(?:list|messages)/i);
 		assert.match(spawnGuidance, /synthesize available.*completion/i);
 		assert.match(spawnGuidance, /subagent_spawn.*lowest sufficient.*thinking level/i);
+		assert.match(
+			spawnGuidance,
+			/subagent_spawn.*maxTurns.*maxToolCalls.*headroom.*discovery.*evidence.*final synthesis.*omit.*speculative.*tight/i,
+		);
+		assert.match(spawnGuidance, /ordinary subagent_spawn.*omit.*contract/i);
+		assert.match(
+			spawnGuidance,
+			/subagent_spawn.*enforcement.*enforce.*readPaths.*writePaths.*network.*secrets.*reject/i,
+		);
+		assert.match(
+			spawnGuidance,
+			/subagent_spawn.*retry.*advisory.*required security boundary.*stop/i,
+		);
 		assert.match(spawnGuidance, /off.*minimal.*extraction.*mechanical/i);
 		assert.match(spawnGuidance, /low.*straightforward.*bounded/i);
 		assert.match(spawnGuidance, /medium.*multi-step/i);
@@ -479,6 +539,18 @@ test("stateful tools are available by default, disable cleanly, and expose the l
 		const autoResumeGuidance = autoResumeSpawn.promptGuidelines.join("\n");
 		assert.match(autoResumeGuidance, /auto-resume/i);
 		assert.match(autoResumeGuidance, /even when.*final answer.*depends/i);
+		assert.match(
+			autoResumeGuidance,
+			/every final-answer-dependent subagent_spawn.*completion message.*visible/i,
+		);
+		assert.match(
+			autoResumeGuidance,
+			/do not duplicate.*assigned work.*running.*fallback.*failure.*insufficient evidence/i,
+		);
+		assert.match(
+			autoResumeGuidance,
+			/smallest named files or questions.*maxTurns.*maxToolCalls.*sufficient/i,
+		);
 		assert.match(
 			autoResumeGuidance,
 			/ordinary review.*main agent.*review skill.*deterministic checks/i,

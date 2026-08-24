@@ -1,5 +1,17 @@
 # @narumitw/pi-sync
 
+## 0.49.12
+
+### Patch Changes
+
+- 806eada: Reduce extension startup time by letting generated TypeScript chunks reference their emitted `.ts` files directly.
+
+## 0.49.11
+
+### Patch Changes
+
+- 9224800: Load the extension from a generated split TypeScript runtime to reduce Jiti startup work while preserving existing first-use boundaries.
+
 ## 0.49.10
 
 ### Patch Changes

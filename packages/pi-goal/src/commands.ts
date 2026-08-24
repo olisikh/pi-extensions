@@ -75,15 +75,19 @@ export class GoalCommandController {
 			}
 		}
 
-		// Unlock lazy visibility only for a real activation. In always mode, a
-		// missing tool means another policy or allowlist intentionally removed it.
+		// Unlock lazy visibility only after final workflow admission. In always mode,
+		// a missing tool means another policy or allowlist intentionally removed it.
 		if (isRequestCurrent && !isRequestCurrent()) return;
+		const retainedOwner = this.runtime.ownsWorkflow(existingGoal);
+		if (!this.runtime.acquireWorkflow(ctx.sessionManager)) return this.reportWorkflowBusy(ctx);
+		const acquiredForRequest = !retainedOwner;
 		const goalToolVisibilityBeforeActivation = this.runtime.toolPolicy.snapshot();
 		try {
 			this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
 		} catch (error) {
 			notifyTerminal(ctx.ui, `Cannot start /goal: ${formatError(error)}`, "error");
 			if (existingGoal?.status === "active") this.runtime.pauseGoalForUnavailableTools(ctx);
+			else if (acquiredForRequest) this.runtime.releaseWorkflow();
 			return;
 		}
 
@@ -99,7 +103,7 @@ export class GoalCommandController {
 		if (!legacyQueueBeforeActivation) this.runtime.persistGoal(startedGoal);
 		if (
 			this.runtime.activeGoal?.id !== startedGoal.id ||
-			this.runtime.activeGoal.status !== "active"
+			!this.runtime.ownsWorkflow(this.runtime.activeGoal)
 		) {
 			return;
 		}
@@ -134,12 +138,12 @@ export class GoalCommandController {
 						this.runtime.updateStatus(ctx, existingGoal);
 						this.runtime.restoreGoalWaitTimer(ctx);
 					} else if (existingGoal.status === "active") {
-						this.runtime.stopActiveGoal(ctx, {
-							kind: "activation_rollback",
-							expectedGoalId: startedGoal.id,
-							restoreGoal: existingGoal,
-							abortTurn: true,
-						});
+						this.runtime.activeGoal = existingGoal;
+						this.runtime.clearStaleGoalToolCallBlock();
+						this.runtime.persistGoal(existingGoal);
+						if (this.runtime.activeGoal?.id === existingGoal.id) {
+							this.runtime.updateStatus(ctx, existingGoal);
+						}
 					} else {
 						this.runtime.activeGoal = existingGoal;
 						if (blocksStaleGoalToolCalls(this.runtime.activeGoal.status)) {
@@ -159,17 +163,20 @@ export class GoalCommandController {
 					this.runtime.clearStaleGoalToolCallBlock();
 					this.runtime.clearStatus(ctx);
 				} else {
-					this.runtime.clearActiveGoal(ctx);
+					this.runtime.clearActiveGoal(ctx, "goal activation rolled back", false);
 				}
 			}
 			if (rolledBackStartedGoal) {
 				this.runtime.toolPolicy.restore(goalToolVisibilityBeforeActivation);
+				if (acquiredForRequest && !this.runtime.ownsWorkflow(existingGoal)) {
+					this.runtime.releaseWorkflow();
+				}
 			}
 			return;
 		}
 		if (
 			this.runtime.activeGoal?.id !== startedGoal.id ||
-			this.runtime.activeGoal.status !== "active"
+			!this.runtime.ownsWorkflow(this.runtime.activeGoal)
 		) {
 			return;
 		}
@@ -237,11 +244,16 @@ export class GoalCommandController {
 			);
 			return;
 		}
+		if (!this.runtime.acquireWorkflow(ctx.sessionManager)) {
+			this.reportWorkflowBusy(ctx);
+			return;
+		}
 		const goalToolVisibilityBeforeActivation = this.runtime.toolPolicy.snapshot();
 		try {
 			this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
 		} catch (error) {
 			notifyTerminal(ctx.ui, `Cannot resume /goal: ${formatError(error)}`, "error");
+			this.runtime.releaseWorkflow();
 			return;
 		}
 		const stoppedGoal = this.runtime.activeGoal;
@@ -254,8 +266,9 @@ export class GoalCommandController {
 			transitionGoal(nextGoalInstance(this.runtime.activeGoal), "active"),
 		);
 		this.runtime.persistGoal(this.runtime.activeGoal);
-		this.runtime.updateStatus(ctx, this.runtime.activeGoal);
 		if (this.runtime.activeGoal.status !== "active") {
+			this.runtime.updateStatus(ctx, this.runtime.activeGoal);
+			this.runtime.releaseWorkflow();
 			notifyTerminal(
 				ctx.ui,
 				`Goal token budget is still reached: ${formatBudget(this.runtime.activeGoal)}`,
@@ -263,6 +276,8 @@ export class GoalCommandController {
 			);
 			return;
 		}
+		if (!this.runtime.ownsWorkflow(this.runtime.activeGoal)) return;
+		this.runtime.updateStatus(ctx, this.runtime.activeGoal);
 		const resumedGoal = this.runtime.activeGoal;
 		const sent = await this.runtime.sendOwnedGoalPrompt(
 			ctx,
@@ -281,9 +296,11 @@ export class GoalCommandController {
 					this.runtime.blockStaleGoalToolCalls();
 				}
 				this.runtime.toolPolicy.restore(goalToolVisibilityBeforeActivation);
+				this.runtime.releaseWorkflow();
 			}
 			return;
 		}
+		if (!this.runtime.ownsWorkflow(resumedGoal)) return;
 		const automaticLimit = this.runtime.settings.continuationLimits.automaticTurns;
 		notifyTerminal(
 			ctx.ui,
@@ -300,6 +317,10 @@ export class GoalCommandController {
 		const waitingGoal = this.runtime.activeGoal;
 		const waiting = waitingGoal?.waiting;
 		if (waitingGoal?.status !== "active" || !waiting) return;
+		if (!this.runtime.acquireWorkflow(ctx.sessionManager)) {
+			this.reportWorkflowBusy(ctx);
+			return;
+		}
 		try {
 			this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
 		} catch (error) {
@@ -322,6 +343,7 @@ export class GoalCommandController {
 			}
 			return;
 		}
+		if (!this.runtime.ownsWorkflow(resumedGoal)) return;
 		notifyTerminal(ctx.ui, `Goal resumed from waiting: ${waitingGoal.text}`, "info");
 	}
 
@@ -359,19 +381,54 @@ export class GoalCommandController {
 			return;
 		}
 
-		this.runtime.recordGoalUsage(this.runtime.activeGoal, ctx);
-		const previousGoal = { ...this.runtime.activeGoal };
+		const currentGoal = this.runtime.activeGoal;
+		const effectiveTokenBudget = tokenBudget ?? currentGoal.tokenBudget;
+		if (
+			currentGoal.status === "budget_limited" &&
+			effectiveTokenBudget !== undefined &&
+			effectiveTokenBudget <= currentGoal.tokensUsed
+		) {
+			notifyTerminal(
+				ctx.ui,
+				`Goal token budget is still reached: ${formatBudget(currentGoal)}. Raise the budget above current usage before editing.`,
+				"warning",
+			);
+			return;
+		}
+		const previousStatus = currentGoal.status;
+		const intendsActive = editedGoalStatus(previousStatus) === "active";
+		const retainedOwner = this.runtime.ownsWorkflow(currentGoal);
+		if (intendsActive && !this.runtime.acquireWorkflow(ctx.sessionManager)) {
+			this.reportWorkflowBusy(ctx);
+			return;
+		}
+		const acquiredForEdit = intendsActive && !retainedOwner;
+		const goalToolVisibilityBeforeActivation = intendsActive
+			? this.runtime.toolPolicy.snapshot()
+			: undefined;
+		if (intendsActive) {
+			try {
+				this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
+			} catch (error) {
+				notifyTerminal(ctx.ui, `Cannot reactivate /goal: ${formatError(error)}`, "error");
+				if (currentGoal.status === "active") this.runtime.pauseGoalForUnavailableTools(ctx);
+				else if (acquiredForEdit) this.runtime.releaseWorkflow();
+				return;
+			}
+		}
+
+		this.runtime.recordGoalUsage(currentGoal, ctx);
+		const previousGoal = { ...currentGoal };
 		this.runtime.clearGoalWaitTimer();
 		this.runtime.cancelContinuationWork();
 		this.runtime.clearGoalRecovery();
 		this.runtime.clearBudgetWrapUp();
-		const previousStatus = this.runtime.activeGoal.status;
-		const rotatedGoal = nextGoalInstance(this.runtime.activeGoal);
+		const rotatedGoal = nextGoalInstance(currentGoal);
 		const transitionedGoal = transitionGoal(
 			{
 				...rotatedGoal,
 				text: objective,
-				tokenBudget: tokenBudget ?? this.runtime.activeGoal.tokenBudget,
+				tokenBudget: effectiveTokenBudget,
 				waiting: undefined,
 			},
 			editedGoalStatus(previousStatus),
@@ -380,25 +437,13 @@ export class GoalCommandController {
 			transitionedGoal.status === "active"
 				? queueGoalSafetyReset(transitionedGoal)
 				: transitionedGoal;
-		const goalToolVisibilityBeforeActivation =
-			nextGoal.status === "active" ? this.runtime.toolPolicy.snapshot() : undefined;
-		if (nextGoal.status === "active") {
-			try {
-				this.runtime.toolPolicy.prepareActivation(this.runtime.settings.toolVisibility, ctx);
-			} catch (error) {
-				notifyTerminal(ctx.ui, `Cannot reactivate /goal: ${formatError(error)}`, "error");
-				if (this.runtime.activeGoal?.status === "active") {
-					this.runtime.pauseGoalForUnavailableTools(ctx);
-				}
-				return;
-			}
-		}
 		this.runtime.activeGoal = nextGoal;
 		this.runtime.persistGoal(this.runtime.activeGoal);
 		this.runtime.updateStatus(ctx, this.runtime.activeGoal);
 		const editedGoal = this.runtime.activeGoal;
 		if (!editedGoal) return;
 		if (editedGoal.status === "active") {
+			if (!this.runtime.ownsWorkflow(editedGoal)) return;
 			this.runtime.clearStaleGoalToolCallBlock();
 			const sent = await this.runtime.sendOwnedGoalPrompt(
 				ctx,
@@ -414,12 +459,12 @@ export class GoalCommandController {
 						this.runtime.updateStatus(ctx, previousGoal);
 						this.runtime.restoreGoalWaitTimer(ctx);
 					} else if (previousStatus === "active") {
-						this.runtime.stopActiveGoal(ctx, {
-							kind: "activation_rollback",
-							expectedGoalId: editedGoal.id,
-							restoreGoal: previousGoal,
-							abortTurn: true,
-						});
+						this.runtime.activeGoal = previousGoal;
+						this.runtime.clearStaleGoalToolCallBlock();
+						this.runtime.persistGoal(previousGoal);
+						if (this.runtime.activeGoal?.id === previousGoal.id) {
+							this.runtime.updateStatus(ctx, previousGoal);
+						}
 					} else {
 						this.runtime.activeGoal = previousGoal;
 						if (blocksStaleGoalToolCalls(this.runtime.activeGoal.status)) {
@@ -433,15 +478,29 @@ export class GoalCommandController {
 					if (goalToolVisibilityBeforeActivation) {
 						this.runtime.toolPolicy.restore(goalToolVisibilityBeforeActivation);
 					}
+					if (acquiredForEdit && previousStatus !== "active") {
+						this.runtime.releaseWorkflow();
+					}
 				}
 				return;
 			}
+			if (!this.runtime.ownsWorkflow(editedGoal)) return;
 		} else if (blocksStaleGoalToolCalls(editedGoal.status)) {
 			this.runtime.blockStaleGoalToolCalls();
 		} else {
 			this.runtime.clearStaleGoalToolCallBlock();
 		}
+		if (editedGoal.status !== "active" && (retainedOwner || acquiredForEdit)) {
+			this.runtime.releaseWorkflow();
+		}
 		notifyTerminal(ctx.ui, `Goal updated: ${objective}`, "info");
+	}
+
+	private reportWorkflowBusy(ctx: StatusContext) {
+		const message = "Another workflow is active in this session. End it before starting Goal.";
+		if (ctx.mode === "print" || ctx.mode === "json") throw new Error(message);
+		notifyTerminal(ctx.ui, message, "warning");
+		return { kind: "busy" as const };
 	}
 
 	showGoal(ctx: StatusContext) {

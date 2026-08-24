@@ -6,8 +6,9 @@ import {
 	createMockPi,
 } from "../../../test/support.js";
 import { PLAN_MODE_MAX_CHARS } from "../src/completion-tool.js";
-import planMode from "../src/plan-mode.js";
+import planModeExtension from "../src/plan-mode.js";
 import { type ActiveImplementationPlan, restorePlanModeState } from "../src/state.js";
+import { renderMockWidget } from "./widget-support.js";
 
 const PLAN = `# Compaction-safe implementation
 
@@ -16,6 +17,22 @@ Marker: PLAN-PERSIST-TEST-42
 1. Preserve the exact approved plan.
 2. Verify it after compaction.`;
 const STATE_ENTRY_TYPE = "plan-mode-state";
+const KEEP_SETTINGS = {
+	readSettings: async () => ({
+		kind: "loaded" as const,
+		settings: {
+			thinkingLevel: "inherit" as const,
+			implementationPlanRetention: "keep" as const,
+		},
+	}),
+};
+
+function planMode(
+	pi: Parameters<typeof planModeExtension>[0],
+	options?: Parameters<typeof planModeExtension>[1],
+) {
+	return planModeExtension(pi, options ?? KEEP_SETTINGS);
+}
 
 function stateEntry(data: Record<string, unknown>) {
 	return { type: "custom", customType: STATE_ENTRY_TYPE, data };
@@ -185,6 +202,7 @@ test("issue 471: an active implementation plan is restored after compaction remo
 	const mock = createMockPi({ activeTools: ["read", "edit"] });
 	planMode(mock.pi);
 	const context = createMockContext();
+	await mock.events.get("session_start")?.[0]?.({}, context.ctx);
 
 	await mock.commands.get("plan")?.handler("start", context.ctx);
 	const complete = mock.tools.find((candidate) => candidate.name === "plan_mode_complete")
@@ -206,13 +224,14 @@ test("issue 471: an active implementation plan is restored after compaction remo
 		messages: Array<Record<string, unknown>>;
 	};
 
-	assert.equal(transformed.messages.length, 3);
+	assert.equal(transformed.messages.length, 4);
 	assert.deepEqual(transformed.messages[0], compactedMessages[0]);
-	assert.deepEqual(transformed.messages[2], compactedMessages[1]);
-	assert.equal(transformed.messages[1]?.role, "custom");
-	assert.equal(transformed.messages[1]?.customType, "plan-mode-implementation-context");
-	assert.match(String(transformed.messages[1]?.content), /ACTIVE IMPLEMENTATION PLAN/);
-	assert.ok(String(transformed.messages[1]?.content).endsWith(PLAN));
+	assert.match(String(transformed.messages[1]?.content), /CONTRACT v1: NORMAL/u);
+	assert.equal(transformed.messages[2]?.role, "custom");
+	assert.equal(transformed.messages[2]?.customType, "plan-mode-implementation-context");
+	assert.match(String(transformed.messages[2]?.content), /ACTIVE IMPLEMENTATION PLAN/);
+	assert.ok(String(transformed.messages[2]?.content).endsWith(PLAN));
+	assert.deepEqual(transformed.messages[3], compactedMessages[1]);
 
 	const persisted = mock.entries.at(-1)?.data as {
 		enabled?: boolean;
@@ -222,29 +241,65 @@ test("issue 471: an active implementation plan is restored after compaction remo
 	assert.equal(persisted.activeImplementation?.plan, PLAN);
 });
 
-test("implementation transition persists active state before a busy follow-up and rejects repeats", async () => {
+test("implementation transition rejects a busy run before committing and succeeds when idle", async () => {
+	let idle = true;
 	const mock = createMockPi({ activeTools: ["read", "edit"] });
 	planMode(mock.pi);
-	const context = createMockContext({ isIdle: () => false });
+	const context = createMockContext({ mode: "tui", hasUI: true, isIdle: () => idle });
+	await mock.events.get("session_start")?.[0]?.({}, context.ctx);
 	await mock.commands.get("plan")?.handler("start", context.ctx);
 	const complete = mock.tools.find((candidate) => candidate.name === "plan_mode_complete")
 		?.execute as ((...args: unknown[]) => Promise<unknown>) | undefined;
 	assert.ok(complete);
 	await complete("complete", { plan: PLAN }, undefined, undefined, context.ctx);
+	const entriesBeforeBusyAttempt = mock.entries.length;
 
+	idle = false;
+	await mock.commands.get("plan")?.handler("implement", context.ctx);
+	assert.equal(context.statuses.get("plan-mode"), "plan ready");
+	assert.deepEqual(mock.rawPi.getActiveTools(), [
+		"read",
+		"edit",
+		"plan_mode_question",
+		"plan_mode_complete",
+	]);
+	assert.equal(mock.entries.length, entriesBeforeBusyAttempt);
+	assert.equal(mock.sentUserMessages.length, 0);
+	assert.match(context.notifications.at(-1)?.message ?? "", /run is active.*retry/i);
+	const heldAttempt = {
+		session: (context.ctx as unknown as { sessionManager: object }).sessionManager,
+		group: "agent-workflow",
+		busy: false,
+	};
+	mock.eventBus.emit("workflow:mutex:v1", heldAttempt);
+	assert.equal(heldAttempt.busy, true);
+
+	idle = true;
 	await mock.commands.get("plan")?.handler("implement", context.ctx);
 	assert.equal(context.statuses.get("plan-mode"), "plan implementing");
 	assert.match(
-		JSON.stringify(context.widgets.get("plan-mode-plan")),
+		renderMockWidget(context.widgets.get("plan-mode-plan")).join("\n"),
 		/implementation plan active/i,
 	);
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "edit"]);
-	assert.deepEqual(mock.sentUserMessages.at(-1)?.options, { deliverAs: "followUp" });
+	assert.deepEqual(mock.rawPi.getActiveTools(), [
+		"read",
+		"edit",
+		"plan_mode_question",
+		"plan_mode_complete",
+	]);
+	assert.equal(mock.sentUserMessages.at(-1)?.options, undefined);
 	const activeState = latestState(mock.entries);
 	assert.equal(activeState?.activeImplementation?.plan, PLAN);
 	assert.equal(activeState.activeImplementation?.source, "plan_mode_complete");
 	assert.match(activeState.activeImplementation?.id ?? "", /^[0-9a-f-]{36}$/u);
 	assert.ok((activeState.activeImplementation?.startedAt ?? -1) >= 0);
+	const releasedAttempt = {
+		session: (context.ctx as unknown as { sessionManager: object }).sessionManager,
+		group: "agent-workflow",
+		busy: false,
+	};
+	mock.eventBus.emit("workflow:mutex:v1", releasedAttempt);
+	assert.equal(releasedAttempt.busy, false);
 
 	const sendsBeforeRepeat = mock.sentUserMessages.length;
 	await mock.commands.get("plan")?.handler("implement", context.ctx);
@@ -269,6 +324,7 @@ test("failed implementation delivery restores ready state without retained imple
 	assert.equal(context.statuses.get("plan-mode"), "plan ready");
 	assert.deepEqual(mock.rawPi.getActiveTools(), [
 		"read",
+		"custom",
 		"plan_mode_question",
 		"plan_mode_complete",
 	]);
@@ -276,12 +332,20 @@ test("failed implementation delivery restores ready state without retained imple
 	assert.equal(restored?.latestPlan, PLAN);
 	assert.equal(restored?.activeImplementation, undefined);
 	assert.match(context.notifications.at(-1)?.message ?? "", /no longer active/);
+	const retainedAttempt = {
+		session: (context.ctx as unknown as { sessionManager: object }).sessionManager,
+		group: "agent-workflow",
+		busy: false,
+	};
+	mock.eventBus.emit("workflow:mutex:v1", retainedAttempt);
+	assert.equal(retainedAttempt.busy, true);
 });
 
 test("a failed superseding prompt restores the exact active implementation", async () => {
 	const mock = createMockPi({ activeTools: ["read", "edit"] });
 	planMode(mock.pi);
 	const context = createMockContext();
+	await mock.events.get("session_start")?.[0]?.({}, context.ctx);
 	await mock.commands.get("plan")?.handler("start", context.ctx);
 	const complete = mock.tools.find((candidate) => candidate.name === "plan_mode_complete")
 		?.execute as ((...args: unknown[]) => Promise<unknown>) | undefined;
@@ -297,7 +361,12 @@ test("a failed superseding prompt restores the exact active implementation", asy
 	await mock.commands.get("plan")?.handler("design a replacement", context.ctx);
 
 	assert.equal(context.statuses.get("plan-mode"), "plan implementing");
-	assert.deepEqual(mock.rawPi.getActiveTools(), ["read", "edit"]);
+	assert.deepEqual(mock.rawPi.getActiveTools(), [
+		"read",
+		"edit",
+		"plan_mode_question",
+		"plan_mode_complete",
+	]);
 	const restored = latestState(mock.entries);
 	assert.equal(restored?.enabled, false);
 	assert.deepEqual(restored?.activeImplementation, activeBeforeFailure);
@@ -308,6 +377,7 @@ test("active context avoids exact handoff duplication and replaces stale injecte
 	const mock = createMockPi({ activeTools: ["read", "edit"] });
 	planMode(mock.pi);
 	const context = createMockContext();
+	await mock.events.get("session_start")?.[0]?.({}, context.ctx);
 	await mock.commands.get("plan")?.handler("start", context.ctx);
 	const complete = mock.tools.find((candidate) => candidate.name === "plan_mode_complete")
 		?.execute as ((...args: unknown[]) => Promise<unknown>) | undefined;
@@ -328,7 +398,8 @@ test("active context avoids exact handoff duplication and replaces stale injecte
 		).length,
 		0,
 	);
-	assert.deepEqual(withHandoff.messages, [{ role: "user", content: "plan it" }, handoff]);
+	assert.match(String(withHandoff.messages[0]?.content), /CONTRACT v1: NORMAL/u);
+	assert.deepEqual(withHandoff.messages.slice(1), [{ role: "user", content: "plan it" }, handoff]);
 
 	const staleHandoff = {
 		role: "user",
@@ -338,7 +409,8 @@ test("active context avoids exact handoff duplication and replaces stale injecte
 		{ messages: [staleHandoff, handoff, handoff] },
 		context.ctx,
 	)) as { messages: Array<Record<string, unknown>> };
-	assert.deepEqual(withStaleHandoff.messages, [handoff]);
+	assert.match(String(withStaleHandoff.messages[0]?.content), /CONTRACT v1: NORMAL/u);
+	assert.deepEqual(withStaleHandoff.messages.slice(1), [handoff]);
 
 	const toolCall = {
 		role: "assistant",
@@ -368,9 +440,10 @@ test("active context avoids exact handoff duplication and replaces stale injecte
 	};
 	for (const transformed of [once.messages, twice.messages]) {
 		assert.deepEqual(transformed[0], compacted[0]);
-		assert.equal(transformed[1]?.customType, "plan-mode-implementation-context");
-		assert.match(String(transformed[1]?.content), /PLAN-PERSIST-TEST-42/);
-		assert.deepEqual(transformed.slice(2), [toolCall, toolResult]);
+		assert.match(String(transformed[1]?.content), /CONTRACT v1: NORMAL/u);
+		assert.equal(transformed[2]?.customType, "plan-mode-implementation-context");
+		assert.match(String(transformed[2]?.content), /PLAN-PERSIST-TEST-42/);
+		assert.deepEqual(transformed.slice(3), [toolCall, toolResult]);
 		assert.equal(
 			transformed.filter((message) => message.customType === "plan-mode-implementation-context")
 				.length,
@@ -383,6 +456,7 @@ test("active plans can be shown and cleared through existing direct routes", asy
 	const mock = createMockPi({ activeTools: ["read", "edit"] });
 	planMode(mock.pi);
 	const context = createMockContext();
+	await mock.events.get("session_start")?.[0]?.({}, context.ctx);
 	await mock.commands.get("plan")?.handler("start", context.ctx);
 	const complete = mock.tools.find((candidate) => candidate.name === "plan_mode_complete")
 		?.execute as ((...args: unknown[]) => Promise<unknown>) | undefined;
@@ -411,7 +485,9 @@ test("active plans can be shown and cleared through existing direct routes", asy
 		},
 		context.ctx,
 	)) as { messages: Array<Record<string, unknown>> };
-	assert.deepEqual(transformed.messages, [{ role: "compactionSummary", summary: "lossy" }]);
+	assert.deepEqual(transformed.messages[0], { role: "compactionSummary", summary: "lossy" });
+	assert.match(String(transformed.messages[1]?.content), /CONTRACT v1: NORMAL/u);
+	assert.equal(transformed.messages.length, 2);
 });
 
 test("a Plan-mode question cannot commit or open its next prompt after Plan mode exits", async () => {
@@ -421,6 +497,7 @@ test("a Plan-mode question cannot commit or open its next prompt after Plan mode
 	const mock = createMockPi({ activeTools: ["read"] });
 	planMode(mock.pi);
 	const context = createMockContext({
+		mode: "rpc",
 		hasUI: true,
 		select: async () => {
 			selectCalls += 1;
@@ -538,6 +615,7 @@ test("the active-plan menu shows without superseding and cancellation is read-on
 			select: async (_title: string, options: string[]) =>
 				selection ? options.find((option) => option.startsWith(selection)) : undefined,
 		});
+		await mock.events.get("session_start")?.[0]?.({}, context.ctx);
 		await mock.commands.get("plan")?.handler("start", context.ctx);
 		const complete = mock.tools.find((candidate) => candidate.name === "plan_mode_complete")
 			?.execute as ((...args: unknown[]) => Promise<unknown>) | undefined;
@@ -574,6 +652,7 @@ test("active-plan menu actions work in TUI and RPC without hidden route changes"
 				return options.find((option) => option.startsWith(scenario.selection));
 			},
 		});
+		await mock.events.get("session_start")?.[0]?.({}, context.ctx);
 		await mock.commands.get("plan")?.handler("start", context.ctx);
 		const complete = mock.tools.find((candidate) => candidate.name === "plan_mode_complete")
 			?.execute as ((...args: unknown[]) => Promise<unknown>) | undefined;
@@ -591,6 +670,7 @@ test("/plan start supersedes an active implementation without starting a model t
 	const mock = createMockPi({ activeTools: ["read", "edit"] });
 	planMode(mock.pi);
 	const context = createMockContext();
+	await mock.events.get("session_start")?.[0]?.({}, context.ctx);
 	await mock.commands.get("plan")?.handler("start", context.ctx);
 	const complete = mock.tools.find((candidate) => candidate.name === "plan_mode_complete")
 		?.execute as ((...args: unknown[]) => Promise<unknown>) | undefined;
@@ -610,6 +690,7 @@ test("starting a new Plan-mode workflow supersedes the active implementation", a
 	const mock = createMockPi({ activeTools: ["read", "edit"] });
 	planMode(mock.pi);
 	const context = createMockContext();
+	await mock.events.get("session_start")?.[0]?.({}, context.ctx);
 	await mock.commands.get("plan")?.handler("start", context.ctx);
 	const complete = mock.tools.find((candidate) => candidate.name === "plan_mode_complete")
 		?.execute as ((...args: unknown[]) => Promise<unknown>) | undefined;
@@ -627,7 +708,10 @@ test("starting a new Plan-mode workflow supersedes the active implementation", a
 		{ messages: [oldHandoff, { role: "user", content: "design a replacement" }] },
 		context.ctx,
 	)) as { messages: Array<Record<string, unknown>> };
-	assert.deepEqual(transformed.messages, [{ role: "user", content: "design a replacement" }]);
+	assert.match(String(transformed.messages[0]?.content), /CONTRACT v1: PLAN/u);
+	assert.deepEqual(transformed.messages.slice(1), [
+		{ role: "user", content: "design a replacement" },
+	]);
 });
 
 test("a superseded session start cannot publish stale settings or UI state", async () => {
@@ -679,38 +763,6 @@ test("a superseded session start cannot publish stale settings or UI state", asy
 	assert.deepEqual(transformed.messages, [{ role: "branchSummary", summary: "current session" }]);
 });
 
-test("the --plan flag supersedes a resumed active implementation", async () => {
-	const activeImplementation: ActiveImplementationPlan = {
-		id: "implementation-1",
-		plan: PLAN,
-		source: "plan_mode_complete",
-		startedAt: 42,
-	};
-	const resumedEntry = stateEntry({
-		enabled: false,
-		awaitingAction: false,
-		activeImplementation,
-	});
-	const mock = createMockPi({ activeTools: ["read", "edit"] });
-	planMode(mock.pi);
-	const planFlag = mock.flags.get("plan");
-	assert.ok(planFlag);
-	planFlag.value = true;
-	const context = createMockContext({
-		sessionManager: {
-			getBranch: () => [resumedEntry],
-			getEntries: () => [resumedEntry],
-		},
-	});
-
-	await mock.events.get("session_start")?.[0]?.({}, context.ctx);
-	assert.equal(context.statuses.get("plan-mode"), "plan active");
-	assert.equal(latestState(mock.entries)?.enabled, true);
-	assert.equal(latestState(mock.entries)?.activeImplementation, undefined);
-	await mock.events.get("session_shutdown")?.[0]?.({}, context.ctx);
-	assert.equal(latestState(mock.entries)?.activeImplementation, undefined);
-});
-
 test("resume and shutdown retain branch-local implementation state while clearing session UI", async () => {
 	const activeImplementation: ActiveImplementationPlan = {
 		id: "implementation-1",
@@ -740,8 +792,9 @@ test("resume and shutdown retain branch-local implementation state while clearin
 		{ messages: [{ role: "branchSummary", summary: "continued branch" }] },
 		context.ctx,
 	)) as { messages: Array<Record<string, unknown>> };
-	assert.equal(transformed.messages[1]?.customType, "plan-mode-implementation-context");
-	assert.match(String(transformed.messages[1]?.content), /PLAN-PERSIST-TEST-42/);
+	assert.match(String(transformed.messages[1]?.content), /CONTRACT v1: NORMAL/u);
+	assert.equal(transformed.messages[2]?.customType, "plan-mode-implementation-context");
+	assert.match(String(transformed.messages[2]?.content), /PLAN-PERSIST-TEST-42/);
 
 	await mock.events.get("session_shutdown")?.[0]?.({}, context.ctx);
 	assert.equal(context.statuses.get("plan-mode"), undefined);

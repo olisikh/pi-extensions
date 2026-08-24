@@ -3,7 +3,7 @@ import { test } from "vitest";
 import { createMockContext, createMockPi } from "../../../test/support.js";
 import planMode from "../src/plan-mode.js";
 
-test("issue 302: re-entered Plan Mode hides the previous implementation handoff", async () => {
+test("issue 302: history-only implementation stays ordinary context when Plan Mode restarts", async () => {
 	const mock = createMockPi({ activeTools: ["read", "bash", "custom"] });
 	planMode(mock.pi);
 	const context = createMockContext();
@@ -22,9 +22,8 @@ test("issue 302: re-entered Plan Mode hides the previous implementation handoff"
 
 	await mock.commands.get("plan")?.handler("implement", context.ctx);
 	const implementationHandoff = mock.sentUserMessages.at(-1)?.text ?? "";
-	assert.match(implementationHandoff, /Plan mode is now disabled/);
-	assert.match(implementationHandoff, /Implement this proposed plan now/);
-	assert.equal(context.statuses.get("plan-mode"), "plan implementing");
+	assert.equal(implementationHandoff, "Implement the plan.");
+	assert.equal(context.statuses.get("plan-mode"), undefined);
 
 	const contextHook = mock.events.get("context")?.[0];
 	assert.ok(contextHook);
@@ -37,37 +36,32 @@ test("issue 302: re-entered Plan Mode hides the previous implementation handoff"
 		{ messages: implementationMessages },
 		context.ctx,
 	)) as { messages: unknown[] };
-	assert.deepEqual(inactiveContext.messages, implementationMessages);
+	assert.match(JSON.stringify(inactiveContext.messages[0]), /CONTRACT v1: NORMAL/u);
+	assert.deepEqual(inactiveContext.messages.slice(1), implementationMessages);
 
 	await mock.commands.get("plan")?.handler("start", context.ctx);
 	assert.equal(context.statuses.get("plan-mode"), "plan active");
 	assert.deepEqual(mock.rawPi.getActiveTools(), [
-		"bash",
 		"read",
+		"bash",
+		"custom",
 		"plan_mode_question",
 		"plan_mode_complete",
 	]);
 
 	const beforeStart = mock.events.get("before_agent_start")?.[0];
 	assert.ok(beforeStart);
-	const promptResult = beforeStart({ systemPrompt: "base" }, context.ctx) as {
-		systemPrompt?: string;
-	};
-	assert.match(promptResult.systemPrompt ?? "", /You are in Plan Mode/);
-	assert.match(promptResult.systemPrompt ?? "", /plan_mode_complete/);
+	const promptResult = beforeStart({ systemPrompt: "base" }, context.ctx) as
+		| { systemPrompt?: string }
+		| undefined;
+	assert.equal(promptResult?.systemPrompt, undefined);
 
 	const activeMessages = [...implementationMessages, { role: "user", content: "continue" }];
 	const activeContext = (await contextHook({ messages: activeMessages }, context.ctx)) as {
 		messages: unknown[];
 	};
 
-	assert.deepEqual(activeContext.messages, [
-		implementationMessages[0],
-		implementationMessages[2],
-		activeMessages[3],
-	]);
-	assert.doesNotMatch(
-		JSON.stringify(activeContext.messages),
-		/Plan mode is now disabled\. Full tool access is restored/,
-	);
+	assert.match(JSON.stringify(activeContext.messages[0]), /CONTRACT v1: PLAN/u);
+	assert.deepEqual(activeContext.messages.slice(1), activeMessages);
+	assert.match(JSON.stringify(activeContext.messages), /Implement the plan\./);
 });

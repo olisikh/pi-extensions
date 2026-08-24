@@ -25,10 +25,7 @@ function latestState(mock: ReturnType<typeof createMockPi>) {
 	};
 }
 
-async function beginImplementation(
-	retention: ImplementationPlanRetention,
-	options: { idle?: boolean } = {},
-) {
+async function beginImplementation(retention: ImplementationPlanRetention) {
 	const mock = createMockPi({ activeTools: ["read", "edit"] });
 	planMode(mock.pi, {
 		readSettings: async () => ({
@@ -39,7 +36,7 @@ async function beginImplementation(
 			},
 		}),
 	});
-	const context = createMockContext({ isIdle: () => options.idle ?? true });
+	const context = createMockContext();
 	await mock.events.get("session_start")?.[0]?.({}, context.ctx);
 	await mock.commands.get("plan")?.handler("start", context.ctx);
 	const complete = mock.tools.find((tool) => tool.name === "plan_mode_complete")?.execute as
@@ -101,33 +98,178 @@ test("keep leaves the accepted plan active after context and settlement", async 
 	assert.equal(context.statuses.get("plan-mode"), "plan implementing");
 });
 
-test("handoff-only waits for the exact queued handoff, preserves its first context, then clears", async () => {
-	const { mock, context, handoff } = await beginImplementation("clear-on-start", { idle: false });
+test("conversation-history implementation uses a short prompt without active-plan injection", async () => {
+	const { mock, context, handoff } = await beginImplementation("clear-on-start");
 	const contextHook = mock.events.get("context")?.[0];
 	assert.ok(contextHook);
-
-	await contextHook({ messages: [{ role: "user", content: "Older queued work" }] }, context.ctx);
-	assert.equal(latestState(mock).activeImplementation?.retention, "clear-on-start");
-
-	const firstImplementationContext = (await contextHook(
-		{ messages: [{ role: "user", content: handoff }] },
-		context.ctx,
-	)) as { messages: unknown[] };
-	assert.match(JSON.stringify(firstImplementationContext.messages), /Retained plan/);
+	assert.equal(handoff, "Implement the plan.");
 	assert.equal(latestState(mock).activeImplementation, undefined);
 	assert.equal(context.statuses.get("plan-mode"), undefined);
 
-	const later = (await contextHook(
-		{ messages: [{ role: "user", content: handoff }] },
+	const older = (await contextHook(
+		{ messages: [{ role: "user", content: "Older queued work" }] },
 		context.ctx,
 	)) as { messages: unknown[] };
-	assert.doesNotMatch(JSON.stringify(later.messages), /Retained plan/);
+	assert.doesNotMatch(JSON.stringify(older.messages), /Retained plan/);
+
+	const planCall = {
+		role: "assistant",
+		content: [
+			{
+				type: "toolCall",
+				id: "complete-plan",
+				name: "plan_mode_complete",
+				arguments: { plan: PLAN },
+			},
+		],
+	};
+	const planResult = {
+		role: "toolResult",
+		toolCallId: "complete-plan",
+		toolName: "plan_mode_complete",
+		content: [{ type: "text", text: `**Proposed Plan**\n\n${PLAN}` }],
+		details: { version: 1, source: "plan_mode_complete", plan: PLAN },
+	};
+	const messages = [planCall, planResult, { role: "user", content: handoff }];
+	for (let call = 0; call < 2; call += 1) {
+		const transformed = (await contextHook({ messages }, context.ctx)) as { messages: unknown[] };
+		assert.match(JSON.stringify(transformed.messages[0]), /CONTRACT v1: NORMAL/u);
+		assert.deepEqual(transformed.messages.slice(1), messages);
+		assert.doesNotMatch(JSON.stringify(transformed.messages), /plan-mode-implementation-context/);
+	}
+	await mock.events.get("agent_settled")?.[0]?.({}, context.ctx);
+	assert.equal(latestState(mock).activeImplementation, undefined);
+});
+
+test("conversation-history context keeps only the latest completed plan before kickoff", async () => {
+	const mock = createMockPi({ activeTools: ["read", "edit"] });
+	planMode(mock.pi);
+	const context = createMockContext();
+	const contextHook = mock.events.get("context")?.[0];
+	assert.ok(contextHook);
+	const completion = (id: string, plan: string) => [
+		{
+			role: "assistant",
+			content: [{ type: "toolCall", id, name: "plan_mode_complete", arguments: { plan } }],
+		},
+		{
+			role: "toolResult",
+			toolCallId: id,
+			toolName: "plan_mode_complete",
+			content: [{ type: "text", text: `**Proposed Plan**\n\n${plan}` }],
+			details: { version: 1, source: "plan_mode_complete", plan },
+		},
+	];
+	const oldCompletion = completion("old-plan", "# Old plan");
+	const duplicateCurrentCall = {
+		role: "assistant",
+		content: [
+			{
+				type: "toolCall",
+				id: "current-plan",
+				name: "plan_mode_complete",
+				arguments: { plan: "# Corrupt duplicate" },
+			},
+		],
+	};
+	const currentCompletion = completion("current-plan", PLAN);
+	const kickoff = { role: "user", content: "Implement the plan." };
+	const transformed = (await contextHook(
+		{ messages: [...oldCompletion, duplicateCurrentCall, ...currentCompletion, kickoff] },
+		context.ctx,
+	)) as { messages: unknown[] };
+
+	assert.deepEqual(transformed.messages, [...currentCompletion, kickoff]);
+});
+
+test("conversation-history context does not revive plans across user or summary boundaries", async () => {
+	const mock = createMockPi({ activeTools: ["read", "edit"] });
+	planMode(mock.pi);
+	const context = createMockContext();
+	const contextHook = mock.events.get("context")?.[0];
+	assert.ok(contextHook);
+	const planCall = {
+		role: "assistant",
+		content: [{ type: "toolCall", id: "complete-plan", name: "plan_mode_complete", arguments: {} }],
+	};
+	const planResult = {
+		role: "toolResult",
+		toolCallId: "complete-plan",
+		toolName: "plan_mode_complete",
+		content: [{ type: "text", text: PLAN }],
+	};
+	const kickoff = { role: "user", content: "Implement the plan." };
+	const completedWork = { role: "assistant", content: "Implementation finished." };
+	const unrelated = { role: "user", content: "Do unrelated work." };
+	const laterKickoff = { role: "user", content: "Implement the plan." };
+	const afterUserBoundary = (await contextHook(
+		{ messages: [planCall, planResult, unrelated, completedWork, laterKickoff] },
+		context.ctx,
+	)) as { messages: unknown[] };
+	assert.deepEqual(afterUserBoundary.messages, [unrelated, completedWork, laterKickoff]);
+
+	const followUp = { role: "user", content: "Continue with verification." };
+	const naturalHistory = (await contextHook(
+		{ messages: [planCall, planResult, kickoff, completedWork, followUp] },
+		context.ctx,
+	)) as { messages: unknown[] };
+	assert.deepEqual(naturalHistory.messages, [
+		planCall,
+		planResult,
+		kickoff,
+		completedWork,
+		followUp,
+	]);
+
+	const summary = { role: "compactionSummary", summary: "The older plan is summarized." };
+	const afterSummaryBoundary = (await contextHook(
+		{ messages: [planCall, planResult, summary, laterKickoff] },
+		context.ctx,
+	)) as { messages: unknown[] };
+	assert.deepEqual(afterSummaryBoundary.messages, [summary, laterKickoff]);
+});
+
+test("conversation-history context drops orphaned completion results", async () => {
+	const mock = createMockPi({ activeTools: ["read", "edit"] });
+	planMode(mock.pi);
+	const context = createMockContext();
+	const contextHook = mock.events.get("context")?.[0];
+	assert.ok(contextHook);
+	const orphanedResult = {
+		role: "toolResult",
+		toolCallId: "missing-call",
+		toolName: "plan_mode_complete",
+		content: [{ type: "text", text: PLAN }],
+	};
+	const kickoff = { role: "user", content: "Implement the plan." };
+	const transformed = (await contextHook({ messages: [orphanedResult, kickoff] }, context.ctx)) as {
+		messages: unknown[];
+	};
+
+	assert.deepEqual(transformed.messages, [kickoff]);
+});
+
+test("conversation-history context preserves a legacy proposed plan without reinjection", async () => {
+	const mock = createMockPi({ activeTools: ["read", "edit"] });
+	planMode(mock.pi);
+	const context = createMockContext();
+	const contextHook = mock.events.get("context")?.[0];
+	assert.ok(contextHook);
+	const proposedPlan = {
+		role: "assistant",
+		content: `<proposed_plan>\n${PLAN}\n</proposed_plan>`,
+	};
+	const kickoff = { role: "user", content: "Implement the plan." };
+	const transformed = (await contextHook({ messages: [proposedPlan, kickoff] }, context.ctx)) as {
+		messages: unknown[];
+	};
+
+	assert.deepEqual(transformed.messages, [proposedPlan, kickoff]);
+	assert.doesNotMatch(JSON.stringify(transformed.messages), /plan-mode-implementation-context/);
 });
 
 test("first-run ignores older settlement and clears only after its handoff context settles", async () => {
-	const { mock, context, handoff } = await beginImplementation("clear-after-first-run", {
-		idle: false,
-	});
+	const { mock, context, handoff } = await beginImplementation("clear-after-first-run");
 	await mock.events.get("agent_settled")?.[0]?.({}, context.ctx);
 	assert.equal(latestState(mock).activeImplementation?.retention, "clear-after-first-run");
 
@@ -174,9 +316,9 @@ test("an armed older implementation cannot clear a superseding implementation", 
 
 test("Implement menus preview each configured retention outcome before confirmation", async () => {
 	for (const [retention, preview] of [
-		["keep", "Keep plan active until /plan exit"],
-		["clear-on-start", "Use the plan for the implementation handoff only"],
-		["clear-after-first-run", "Clear after the first implementation run settles"],
+		["clear-on-start", "Off; use conversation history only"],
+		["clear-after-first-run", "Through the first implementation run"],
+		["keep", "Until /plan exit"],
 	] as const) {
 		let menuTitle = "";
 		const mock = createMockPi({ activeTools: ["read"] });
@@ -235,7 +377,7 @@ test("changing Settings does not retroactively change an active implementation",
 				}
 				if (changedSetting) return undefined;
 				changedSetting = true;
-				return options.find((option) => option.startsWith("After Implement"));
+				return options.find((option) => option.startsWith("Plan reinjection"));
 			},
 		});
 		await mock.events.get("session_start")?.[0]?.({}, context.ctx);

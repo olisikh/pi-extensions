@@ -1,6 +1,6 @@
 {
 	"name": "@narumitw/pi-tui-kit",
-	"version": "0.56.0",
+	"version": "0.58.0",
 	"description": "Declarative UI flows and navigation helpers built on Pi TUI.",
 	"type": "module",
 	"license": "MIT",
@@ -51,9 +51,9 @@
 		"@earendil-works/pi-tui": "*"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.5.8",
-		"@earendil-works/pi-coding-agent": "0.84.2",
-		"@earendil-works/pi-tui": "0.84.2",
+		"@biomejs/biome": "2.5.10",
+		"@earendil-works/pi-coding-agent": "0.84.3",
+		"@earendil-works/pi-tui": "0.84.3",
 		"typescript": "7.0.2"
 	},
 	"repository": {
@@ -62,7 +62,7 @@
 		"directory": "packages/pi-tui-kit"
 	},
 	"dependencies": {
-		"grok-mermaid": "0.2.2",
+		"grok-mermaid": "0.2.3",
 		"highlight.js": "11.12.0"
 	}
 }

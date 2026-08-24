@@ -8,9 +8,11 @@ import {
 	configuredImplementationPlanRetention,
 	configuredPlanExportPath,
 	configuredPlanModeToggleShortcut,
+	configuredPlanModeToolVisibility,
 	IMPLEMENTATION_PLAN_RETENTIONS,
 	normalizeKeyId,
 	PLAN_MODE_THINKING_LEVELS,
+	PLAN_MODE_TOOL_VISIBILITIES,
 	type PlanModeSettings,
 	type PlanModeSettingsLoadResult,
 	type PlanModeSettingsPatch,
@@ -31,6 +33,7 @@ interface SettingsMenuState {
 
 export interface PlanModeSettingsMenuOptions {
 	tools: readonly ToolInfo[];
+	activeToolNames?: readonly string[];
 	signal: AbortSignal;
 	isCurrent(): boolean;
 	settingsPath?: string;
@@ -46,6 +49,7 @@ export interface PlanModeSettingsMenuOptions {
 type Screen = "settings" | "tools" | "export" | "shortcut";
 type Action =
 	| "set-thinking"
+	| "set-tool-visibility"
 	| "open-tools"
 	| "toggle-tool"
 	| "reset-tools"
@@ -62,6 +66,9 @@ export async function showPlanModeSettings(
 	const settingsPath = options.settingsPath ?? planModeSettingsPath();
 	const readSettings = options.readSettings ?? readPlanModeSettings;
 	const updateSettings = options.updateSettings ?? updatePlanModeSettings;
+	const activeToolNames = new Set(
+		options.activeToolNames ?? options.tools.map((tool) => tool.name),
+	);
 	const tools = options.tools.filter(
 		(tool) =>
 			tool.name !== PLAN_MODE_QUESTION_TOOL_NAME && tool.name !== PLAN_MODE_COMPLETE_TOOL_NAME,
@@ -105,16 +112,17 @@ export async function showPlanModeSettings(
 								},
 								{
 									id: "defaultPlanTools",
-									label: "Plan tools",
+									label: "Plan policy tools",
 									description:
-										"Choose persistent defaults; a launch-time selection still overrides them for that session.",
+										"Choose which already-active tools Plan mode may execute by default.",
 									currentValue: defaultToolsValue(state.settings.defaultPlanTools),
 									action: "open-tools",
 								},
 								{
 									id: "implementationPlanRetention",
-									label: "After Implement",
-									description: "Choose how long the accepted plan keeps guiding implementation.",
+									label: "Plan reinjection",
+									description:
+										"Choose how long Plan mode restores the exact plan when ordinary context no longer contains it.",
 									currentValue: retentionLabel(
 										configuredImplementationPlanRetention(state.settings),
 									),
@@ -135,18 +143,29 @@ export async function showPlanModeSettings(
 									currentValue: configuredPlanModeToggleShortcut(state.settings) ?? "none",
 									action: "open-shortcut",
 								},
+								{
+									id: "toolVisibility",
+									label: "Plan tools",
+									description:
+										"Keep Plan helper tools visible, or reveal them after the first plan.",
+									currentValue: toolVisibilityLabel(
+										configuredPlanModeToolVisibility(state.settings),
+									),
+									values: PLAN_MODE_TOOL_VISIBILITIES.map(toolVisibilityLabel),
+									action: "set-tool-visibility",
+								},
 							],
 						},
 			tools: ({ state }) => ({
 				kind: "multiSelect",
-				title: "Default Plan-mode tools",
+				title: "Default Plan policy allowlist",
 				lines: [
-					"Changes apply when a later Plan workflow starts; required Plan tools stay enabled.",
-					"Non-built-in tools run at user risk.",
+					"Changes apply when a later Plan workflow starts; model-visible tools stay unchanged.",
+					"Only tools already active in Pi can be allowed; non-built-ins run at user risk.",
 				],
 				enableSearch: true,
 				viewportSize: 10,
-				items: defaultToolItems(tools, state.settings.defaultPlanTools),
+				items: defaultToolItems(tools, state.settings.defaultPlanTools, activeToolNames),
 				action: "toggle-tool",
 				actions: [
 					{
@@ -201,6 +220,16 @@ export async function showPlanModeSettings(
 					`Plan mode thinking level: ${value}. Applies to the next Plan workflow.`,
 				);
 			},
+			"set-tool-visibility": async ({ ctx: actionCtx, value, signal }) => {
+				const toolVisibility = toolVisibilityFromLabel(value);
+				if (!toolVisibility) return { kind: "rejected" };
+				return savePatch(
+					actionCtx,
+					{ toolVisibility },
+					signal,
+					`Plan tools: ${toolVisibilityLabel(toolVisibility)}.`,
+				);
+			},
 			"open-tools": async () => ({ kind: "to", screen: "tools" }),
 			"set-retention": async ({ ctx: actionCtx, value, signal }) => {
 				const implementationPlanRetention = retentionFromLabel(value);
@@ -209,7 +238,7 @@ export async function showPlanModeSettings(
 					actionCtx,
 					{ implementationPlanRetention },
 					signal,
-					`After Implement: ${retentionLabel(implementationPlanRetention)}. Applies to the next Implement action.`,
+					`Plan reinjection: ${retentionLabel(implementationPlanRetention)}. Applies to the next Implement action.`,
 				);
 			},
 			"open-export": async () => ({ kind: "to", screen: "export" }),
@@ -248,7 +277,9 @@ export async function showPlanModeSettings(
 			},
 			"toggle-tool": async ({ ctx: actionCtx, state, itemId, selected, signal }) => {
 				const tool = tools.find((candidate) => candidate.name === itemId);
-				if (!tool || !canSelectToolInPlanMode(tool)) return { kind: "rejected" };
+				if (!tool || !activeToolNames.has(tool.name) || !canSelectToolInPlanMode(tool)) {
+					return { kind: "rejected" };
+				}
 				const names = explicitToolNames(tools, state.settings.defaultPlanTools);
 				const next = selected
 					? Array.from(new Set([...names, tool.name]))
@@ -257,7 +288,7 @@ export async function showPlanModeSettings(
 					actionCtx,
 					{ defaultPlanTools: next },
 					signal,
-					`Default Plan-mode tools: ${next.length === 0 ? "required tools only" : `${next.length} selected`}.`,
+					`Default Plan policy: ${next.length === 0 ? "no optional tools" : `${next.length} allowed`}.`,
 				);
 			},
 			"reset-tools": async ({ ctx: actionCtx, state, signal }) => {
@@ -310,7 +341,7 @@ export async function showPlanModeSettings(
 function settingsLines(settingsPath: string, notice: string | undefined) {
 	return [
 		`User settings · ${safeTerminalText(settingsPath)}`,
-		"Plan defaults apply to the next workflow; handoff and export choices apply to their next action.",
+		"Plan defaults apply to the next workflow; reinjection and export choices apply to their next action.",
 		...(notice ? [safeTerminalText(notice)] : []),
 	];
 }
@@ -332,18 +363,33 @@ function retentionFromLabel(value: string | undefined) {
 	return IMPLEMENTATION_PLAN_RETENTIONS.find((retention) => retentionLabel(retention) === value);
 }
 
+function toolVisibilityLabel(value: PlanModeSettings["toolVisibility"] | "after-first-plan") {
+	return value === "always" ? "Always" : "After first plan";
+}
+
+function toolVisibilityFromLabel(value: string | undefined) {
+	return PLAN_MODE_TOOL_VISIBILITIES.find(
+		(visibility) => toolVisibilityLabel(visibility) === value,
+	);
+}
+
 function defaultToolsValue(configured: string[] | undefined) {
 	if (configured === undefined) return "Automatic safe built-ins";
-	if (configured.length === 0) return "Required tools only";
+	if (configured.length === 0) return "No optional tools";
 	return `${configured.length} selected`;
 }
 
-function defaultToolItems(tools: readonly ToolInfo[], configured: string[] | undefined) {
+function defaultToolItems(
+	tools: readonly ToolInfo[],
+	configured: string[] | undefined,
+	activeToolNames: ReadonlySet<string>,
+) {
 	const selected = new Set(explicitToolNames(tools, configured));
 	const availableNames = new Set(tools.map((tool) => tool.name));
 	const items = tools.map((tool) => {
-		const selectable = canSelectToolInPlanMode(tool);
-		const policy = toolPolicyLabel(tool);
+		const active = activeToolNames.has(tool.name);
+		const selectable = active && canSelectToolInPlanMode(tool);
+		const policy = active ? toolPolicyLabel(tool) : "not active in this Pi session";
 		const description = tool.description ?? "No description available";
 		return {
 			id: tool.name,
@@ -352,7 +398,11 @@ function defaultToolItems(tools: readonly ToolInfo[], configured: string[] | und
 			searchText: `${policy} ${description}`,
 			selected: selected.has(tool.name),
 			disabled: !selectable,
-			disabledReason: selectable ? undefined : "Blocked by Plan-mode policy",
+			disabledReason: !active
+				? "Not active in Pi; Plan mode will not activate it"
+				: selectable
+					? undefined
+					: "Blocked by Plan-mode policy",
 		};
 	});
 	for (const name of configured ?? []) {
